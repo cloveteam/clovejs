@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
-import { generateTypes, ensureGitignore } from "../codegen/index.js"
+import { generateTypes, ensureGitignore, tsconfigIncludeWarning } from "../codegen/index.js"
 import { startDevServer } from "../dev/index.js"
 import { CloveBootError } from "../errors.js"
 import { resolveSourceDir } from "../scanner/index.js"
@@ -77,6 +77,8 @@ async function main(): Promise<void> {
       const out = await generateTypes({ rootDir, sourceDir })
       await ensureGitignore(rootDir)
       console.log(`Generated ${out}`)
+      const warning = await tsconfigIncludeWarning(rootDir)
+      if (warning) console.warn(`\nWarning: ${warning}`)
       return
     }
 
@@ -86,6 +88,8 @@ async function main(): Promise<void> {
         console.log("No tsconfig.json found — nothing to compile.")
         return
       }
+      const warning = await tsconfigIncludeWarning(rootDir)
+      if (warning) console.warn(`Warning: ${warning}`)
       console.log("Compiling with tsc...")
       try {
         execFileSync("npx", ["tsc"], { cwd: rootDir, stdio: "inherit" })

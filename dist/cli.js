@@ -71,12 +71,18 @@ function render(entries) {
     );
     return lines.join("\n");
   }
-  lines.push('import type { CloveService, CloveDi, Logger } from "clovejs"');
+  const emitLogger = !entries.some((e) => e.key === "logger");
+  const helpers = [
+    entries.some((e) => e.kind === "service") && "CloveService",
+    entries.some((e) => e.kind === "di") && "CloveDi",
+    emitLogger && "Logger"
+  ].filter((name) => Boolean(name));
+  lines.push(`import type { ${helpers.join(", ")} } from "clovejs"`);
   for (const entry of entries) {
     lines.push(`import type ${identifier(entry.key)} from "${entry.specifier}"`);
   }
   lines.push("", 'declare module "clovejs" {', "  interface Ctx {");
-  if (!entries.some((e) => e.key === "logger")) {
+  if (emitLogger) {
     lines.push("    /** The built-in logger. Override it with services/logger.ts. */");
     lines.push("    logger: Logger");
   }
@@ -97,6 +103,26 @@ function importSpecifier(fromDir, target) {
   let rel = relative(fromDir, target).split("\\").join("/");
   if (!rel.startsWith(".")) rel = "./" + rel;
   return rel.replace(/\.(m|c)?tsx?$/, "").replace(/\.(m|c)?jsx?$/, "");
+}
+async function tsconfigIncludeWarning(rootDir) {
+  const raw = await readFile(join(rootDir, "tsconfig.json"), "utf8").catch(() => null);
+  if (raw === null) return null;
+  let config;
+  try {
+    config = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof config !== "object" || config === null) return null;
+  const patterns = ["files", "include"].flatMap((field) => {
+    const value = config[field];
+    return Array.isArray(value) ? value.filter((p) => typeof p === "string") : [];
+  });
+  const covered = patterns.some(
+    (p) => p.replace(/^\.\//, "").startsWith(`${OUTPUT_DIR}/`) && p.replace(/^\.\//, "") !== `${OUTPUT_DIR}/`
+  );
+  if (covered) return null;
+  return `tsconfig.json does not include ${OUTPUT_DIR}/${OUTPUT_FILE}, so ctx stays untyped. TypeScript skips dot-directories unless a pattern names their contents explicitly \u2014 add "${OUTPUT_DIR}/**/*" to "include" (a bare "${OUTPUT_DIR}" entry matches nothing).`;
 }
 async function ensureGitignore(rootDir) {
   const path = join(rootDir, ".gitignore");
@@ -125,6 +151,8 @@ async function startDevServer(options = {}) {
   const logger = createLogger(options.logLevel ?? "debug");
   let built = await fingerprint(sourceDir);
   await generateTypes({ rootDir, sourceDir });
+  const includeWarning = await tsconfigIncludeWarning(rootDir);
+  if (includeWarning) logger.warn(includeWarning);
   let app = await createApp({
     ...options,
     rootDir,
@@ -362,7 +390,9 @@ export default service(async (ctx) => ({
             rootDir: "src",
             types: ["node"]
           },
-          include: ["src", ".clove"]
+          // The generated types live in a dot-directory, which TypeScript's
+          // include wildcards skip — the glob has to name its contents.
+          include: ["src", ".clove/**/*"]
         },
         null,
         2
@@ -927,6 +957,9 @@ async function main() {
       const out = await generateTypes({ rootDir, sourceDir });
       await ensureGitignore(rootDir);
       console.log(`Generated ${out}`);
+      const warning = await tsconfigIncludeWarning(rootDir);
+      if (warning) console.warn(`
+Warning: ${warning}`);
       return;
     }
     case "build": {
@@ -935,6 +968,8 @@ async function main() {
         console.log("No tsconfig.json found \u2014 nothing to compile.");
         return;
       }
+      const warning = await tsconfigIncludeWarning(rootDir);
+      if (warning) console.warn(`Warning: ${warning}`);
       console.log("Compiling with tsc...");
       try {
         execFileSync("npx", ["tsc"], { cwd: rootDir, stdio: "inherit" });

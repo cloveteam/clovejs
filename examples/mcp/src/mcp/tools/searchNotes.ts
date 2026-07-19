@@ -1,6 +1,5 @@
 import { tool } from "clovejs/mcp"
 import { z } from "zod"
-import type { Note } from "../../services/notes.js"
 
 // The tool name comes from the filename: `searchNotes`. The `input` schema is
 // published to the client as JSON Schema, validated before this handler runs,
@@ -17,7 +16,7 @@ export default tool({
     return ctx.notes
       .list()
       .filter(
-        (note: Note) =>
+        (note) =>
           note.title.toLowerCase().includes(needle) ||
           note.body.toLowerCase().includes(needle),
       )

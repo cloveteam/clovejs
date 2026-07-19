@@ -52,13 +52,19 @@ goes missing.
 
 ## Wiring it into an existing tsconfig
 
-If you did not scaffold, include the directory:
+If you did not scaffold, include the generated files:
 
 ```json
 {
-  "include": ["src", ".clove"]
+  "include": ["src", ".clove/**/*"]
 }
 ```
+
+The glob matters: TypeScript's include wildcards never descend into
+directories whose name starts with a dot, so a bare `".clove"` entry (and the
+default `**/*`) silently matches nothing — the augmentation is dropped and
+every `ctx` property falls back to `any`. `clove dev`, `clove build` and
+`clove types` warn when they detect a tsconfig with this problem.
 
 ## The helper types
 

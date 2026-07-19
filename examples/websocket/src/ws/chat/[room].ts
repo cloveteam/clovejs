@@ -1,5 +1,4 @@
 import { ws } from "clovejs"
-import type { ChatMessage } from "../../services/chat.js"
 
 // Serves /ws/chat/:room — `[room]` is a parameter, same as in an HTTP route,
 // and arrives on `params`.
@@ -13,7 +12,7 @@ export default ws(async ({ params, req, send, onMessage, onDestroy, ctx }) => {
   // Replay what was said before this socket joined.
   for (const msg of ctx.chat.recent(room)) send(msg)
 
-  const unsubscribe = ctx.chat.subscribe(room, (msg: ChatMessage) => send(msg))
+  const unsubscribe = ctx.chat.subscribe(room, (msg) => send(msg))
   ctx.logger.info(`${who} joined ${room} (${ctx.chat.occupants(room)} here)`)
   ctx.chat.publish(room, "system", `${who} joined`)
 

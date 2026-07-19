@@ -96,7 +96,9 @@ export async function scaffold(options: ScaffoldOptions): Promise<ScaffoldResult
             rootDir: "src",
             types: ["node"],
           },
-          include: ["src", ".clove"],
+          // The generated types live in a dot-directory, which TypeScript's
+          // include wildcards skip — the glob has to name its contents.
+          include: ["src", ".clove/**/*"],
         },
         null,
         2,

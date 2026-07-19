@@ -91,13 +91,20 @@ function render(entries: Entry[]): string {
     return lines.join("\n")
   }
 
-  lines.push('import type { CloveService, CloveDi, Logger } from "clovejs"')
+  const emitLogger = !entries.some((e) => e.key === "logger")
+  const helpers = [
+    entries.some((e) => e.kind === "service") && "CloveService",
+    entries.some((e) => e.kind === "di") && "CloveDi",
+    emitLogger && "Logger",
+  ].filter((name): name is string => Boolean(name))
+
+  lines.push(`import type { ${helpers.join(", ")} } from "clovejs"`)
   for (const entry of entries) {
     lines.push(`import type ${identifier(entry.key)} from "${entry.specifier}"`)
   }
   lines.push("", 'declare module "clovejs" {', "  interface Ctx {")
 
-  if (!entries.some((e) => e.key === "logger")) {
+  if (emitLogger) {
     lines.push("    /** The built-in logger. Override it with services/logger.ts. */")
     lines.push("    logger: Logger")
   }
@@ -126,6 +133,48 @@ function importSpecifier(fromDir: string, target: string): string {
   // TypeScript resolves the declaration from the source file, so the extension
   // is dropped rather than rewritten to .js.
   return rel.replace(/\.(m|c)?tsx?$/, "").replace(/\.(m|c)?jsx?$/, "")
+}
+
+/**
+ * Returns a warning when tsconfig.json cannot see the generated types file,
+ * or null when it can (or when there is no tsconfig to judge).
+ *
+ * TypeScript never expands an include wildcard into a directory whose name
+ * starts with a dot, so `"include": [".clove"]` matches nothing — the file
+ * must be named by an explicit pattern such as `.clove/**\/*`. The failure is
+ * silent: the augmentation is simply absent and `ctx` falls back to
+ * `Record<string, any>` everywhere.
+ */
+export async function tsconfigIncludeWarning(rootDir: string): Promise<string | null> {
+  const raw = await readFile(join(rootDir, "tsconfig.json"), "utf8").catch(() => null)
+  if (raw === null) return null
+
+  let config: unknown
+  try {
+    config = JSON.parse(raw)
+  } catch {
+    // Comments or trailing commas — legal in a tsconfig, but this check is
+    // best-effort and stays quiet rather than guessing.
+    return null
+  }
+  if (typeof config !== "object" || config === null) return null
+
+  const patterns = ["files", "include"].flatMap((field) => {
+    const value = (config as Record<string, unknown>)[field]
+    return Array.isArray(value) ? value.filter((p): p is string => typeof p === "string") : []
+  })
+
+  const covered = patterns.some((p) =>
+    p.replace(/^\.\//, "").startsWith(`${OUTPUT_DIR}/`) &&
+    p.replace(/^\.\//, "") !== `${OUTPUT_DIR}/`,
+  )
+  if (covered) return null
+
+  return (
+    `tsconfig.json does not include ${OUTPUT_DIR}/${OUTPUT_FILE}, so ctx stays untyped. ` +
+    `TypeScript skips dot-directories unless a pattern names their contents explicitly — ` +
+    `add "${OUTPUT_DIR}/**/*" to "include" (a bare "${OUTPUT_DIR}" entry matches nothing).`
+  )
 }
 
 /** Ensures the project's .gitignore covers the generated directory. */

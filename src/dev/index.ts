@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http"
 import { join } from "node:path"
 import { createApp, CloveApp, type AppOptions } from "../app.js"
 import { createLogger, type Logger } from "../container/logger.js"
-import { generateTypes } from "../codegen/index.js"
+import { generateTypes, tsconfigIncludeWarning } from "../codegen/index.js"
 import { resolveSourceDir, walkDir } from "../scanner/index.js"
 
 /**
@@ -58,6 +58,8 @@ export async function startDevServer(
   let built = await fingerprint(sourceDir)
 
   await generateTypes({ rootDir, sourceDir })
+  const includeWarning = await tsconfigIncludeWarning(rootDir)
+  if (includeWarning) logger.warn(includeWarning)
 
   let app = await createApp({
     ...options,

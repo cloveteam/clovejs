@@ -41,7 +41,7 @@ describe("scaffold", () => {
     expect(result.created).toContain("tsconfig.json")
 
     const tsconfig = JSON.parse(await readFile(join(dir, "tsconfig.json"), "utf8"))
-    expect(tsconfig.include).toContain(".clove")
+    expect(tsconfig.include).toContain(".clove/**/*")
 
     const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"))
     expect(pkg.scripts.dev).toBe("clove dev")
