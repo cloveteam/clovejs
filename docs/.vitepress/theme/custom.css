@@ -1,0 +1,131 @@
+/**
+ * CloveJS documentation theme.
+ *
+ * Only VitePress design tokens are overridden here — component internals are
+ * left alone so the theme keeps working across VitePress upgrades.
+ */
+
+:root {
+  /* Brand ramp: clove-leaf green, warm enough to sit next to the spice accent. */
+  --vp-c-brand-1: #2f8a61;
+  --vp-c-brand-2: #37a173;
+  --vp-c-brand-3: #46b985;
+  --vp-c-brand-soft: rgba(70, 185, 133, 0.14);
+
+  --clove-accent: #c2703f;
+  --clove-accent-soft: rgba(194, 112, 63, 0.14);
+
+  --vp-font-family-base: "Inter var", "Inter", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --vp-font-family-mono: "JetBrains Mono", ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.dark {
+  --vp-c-brand-1: #5fcf9c;
+  --vp-c-brand-2: #46b985;
+  --vp-c-brand-3: #37a173;
+  --vp-c-brand-soft: rgba(95, 207, 156, 0.16);
+
+  --clove-accent: #e0955f;
+  --clove-accent-soft: rgba(224, 149, 95, 0.16);
+}
+
+/* ---------------------------------------------------------------- home hero */
+
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(
+    120deg,
+    var(--vp-c-brand-1) 30%,
+    var(--clove-accent)
+  );
+
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    var(--vp-c-brand-1) 40%,
+    var(--clove-accent) 100%
+  );
+  --vp-home-hero-image-filter: blur(56px);
+}
+
+@media (min-width: 640px) {
+  :root {
+    --vp-home-hero-image-filter: blur(72px);
+  }
+}
+
+/* Feature cards read as one system: subtle lift, no heavy borders. */
+.VPFeature {
+  border-color: var(--vp-c-divider);
+  transition:
+    border-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.VPFeature:hover {
+  border-color: var(--vp-c-brand-2);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.dark .VPFeature:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ------------------------------------------------------------------ content */
+
+.vp-doc h1 {
+  letter-spacing: -0.025em;
+}
+
+.vp-doc h2 {
+  letter-spacing: -0.015em;
+  padding-top: 22px;
+  margin-top: 44px;
+}
+
+/* Tables are used heavily for conventions; make them scan cleanly and never
+   push the page into horizontal scroll. */
+.vp-doc table {
+  display: table;
+  width: 100%;
+  font-size: 0.92em;
+}
+
+.vp-doc .table-wrapper {
+  overflow-x: auto;
+}
+
+.vp-doc th {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background-color: var(--vp-c-bg-soft);
+}
+
+/* Inline code: quieter than the default chip so prose stays readable. */
+.vp-doc :not(pre) > code {
+  background-color: var(--vp-c-default-soft);
+  font-size: 0.875em;
+}
+
+.vp-doc a > code {
+  color: var(--vp-c-brand-1);
+}
+
+/* Filesystem-convention blocks (the directory trees) get a warmer frame. */
+.vp-doc div[class*="language-"] {
+  border-radius: 10px;
+}
+
+.custom-block.tip {
+  border-color: var(--vp-c-brand-1);
+}
+
+.custom-block.info {
+  border-color: var(--clove-accent);
+}
