@@ -115,12 +115,15 @@ ${OUTPUT_DIR}/
 }
 
 // src/dev/index.ts
+import { stat } from "fs/promises";
 import { createServer } from "http";
 import { join as join2 } from "path";
+var RECONCILE_DELAYS = [150, 600, 1500];
 async function startDevServer(options = {}) {
   const rootDir = options.rootDir ?? process.cwd();
   const sourceDir = options.sourceDir ?? resolveSourceDir(rootDir);
   const logger = createLogger(options.logLevel ?? "debug");
+  let built = await fingerprint(sourceDir);
   await generateTypes({ rootDir, sourceDir });
   let app = await createApp({
     ...options,
@@ -130,6 +133,8 @@ async function startDevServer(options = {}) {
     moduleCache: false
   });
   let reloading;
+  let pending;
+  let closed = false;
   const server = createServer((req, res) => app.listener(req, res));
   server.on("upgrade", (req, socket, head) => app.handleUpgrade(req, socket, head));
   const port = options.port ?? Number(process.env.PORT ?? 3e3);
@@ -146,8 +151,16 @@ async function startDevServer(options = {}) {
   const url = `http://${host}:${actualPort}`;
   logSummary(app, logger, url);
   const reload = async (changed) => {
+    if (pending) {
+      pending.changed = changed;
+      return reloading ?? Promise.resolve();
+    }
+    const batch = { changed };
+    pending = batch;
     reloading = (reloading ?? Promise.resolve()).then(async () => {
+      pending = void 0;
       const started = Date.now();
+      const snapshot = await fingerprint(sourceDir).catch(() => built);
       try {
         await generateTypes({ rootDir, sourceDir });
         const next = await createApp({
@@ -159,11 +172,13 @@ async function startDevServer(options = {}) {
         });
         const previous = app;
         app = next;
+        built = snapshot;
         await previous.close().catch(() => void 0);
         logger.info(
-          `Reloaded after ${relativeTo(sourceDir, changed)} (${Date.now() - started}ms)`
+          `Reloaded after ${relativeTo(sourceDir, batch.changed)} (${Date.now() - started}ms)`
         );
       } catch (err) {
+        built = snapshot;
         logger.error(
           `Reload failed, still serving the previous build:
 ${err instanceof Error ? err.message : String(err)}`
@@ -185,19 +200,47 @@ ${err instanceof Error ? err.message : String(err)}`
     if (!/\.[cm]?[jt]s$/.test(path)) return;
     void reload(path);
   });
+  watcher.on("error", (err) => {
+    logger.error(`File watcher error: ${err instanceof Error ? err.message : String(err)}`);
+  });
   await new Promise((resolve) => {
     watcher.once("ready", () => resolve());
   });
+  const sweeps = RECONCILE_DELAYS.map(
+    (delay) => setTimeout(() => {
+      void (async () => {
+        if (closed) return;
+        const current = await fingerprint(sourceDir).catch(() => null);
+        if (current === null || current === built) return;
+        logger.debug("Source changed before the watcher was live; reloading.");
+        await reload("a change the watcher missed");
+      })();
+    }, delay)
+  );
+  for (const sweep of sweeps) sweep.unref?.();
   return {
     server,
     url,
     async close() {
+      closed = true;
+      for (const sweep of sweeps) clearTimeout(sweep);
       await watcher.close();
+      await reloading?.catch(() => void 0);
       await new Promise((resolve) => server.close(() => resolve()));
       server.closeAllConnections?.();
       await app.close();
     }
   };
+}
+async function fingerprint(sourceDir) {
+  const files = await walkDir(sourceDir);
+  const entries = await Promise.all(
+    files.map(async (file) => {
+      const stats = await stat(file.absolute).catch(() => null);
+      return stats ? `${file.relative}:${stats.size}:${stats.mtimeMs}` : `${file.relative}:gone`;
+    })
+  );
+  return entries.join("\n");
 }
 function logSummary(app, logger, url) {
   const routes = app.routes.list();

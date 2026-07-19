@@ -16,6 +16,20 @@
 - `clove routes` and the dev-server banner now list the MCP endpoint.
 - `bootstrap()` accepts `mcpPath` and `mcpServerInfo`.
 
+### Fixed
+
+- **`clove dev` no longer misses a file saved just after startup.** A recursive
+  filesystem watch can report itself ready before the OS is actually delivering
+  events, so a save in that window reached no listener at all — no error, no
+  retry, and no reload until something else changed. The dev server now
+  snapshots the source tree before it reads it and re-checks a few times over
+  the first couple of seconds, reloading if the two have drifted apart.
+- A burst of saves — a branch switch, a formatter run — now triggers one
+  rebuild rather than one per file.
+- `close()` waits for a rebuild already in flight, instead of leaving behind an
+  application whose singletons are never disposed.
+- Watcher errors are reported rather than swallowed.
+
 ## 0.1.0
 
 Initial release.

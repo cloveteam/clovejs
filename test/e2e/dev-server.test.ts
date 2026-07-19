@@ -150,4 +150,75 @@ describe("dev server", () => {
     }
     expect(await readFile(typesPath, "utf8")).toContain("mailer")
   })
+
+  it("picks up a change made while it was still starting up", async () => {
+    // A recursive filesystem watch can report itself ready before the OS is
+    // delivering events, so a save in that window reaches no listener at all.
+    // Writing concurrently with startup lands in exactly that gap; the startup
+    // reconciliation sweeps are what stop it from being lost.
+    dir = await project({
+      "api/hello.get.ts": route("hi"),
+      "services/greeter.ts": `import { service } from "clovejs"\nexport default service(async () => ({ hi: () => "hi" }))\n`,
+    })
+
+    const starting = startDevServer({
+      rootDir: dir,
+      port: 0,
+      host: "127.0.0.1",
+      logLevel: "silent",
+    })
+    await writeFile(
+      join(dir, "services/mailer.ts"),
+      `import { service } from "clovejs"\nexport default service(async () => ({ send: () => true }))\n`,
+      "utf8",
+    )
+    dev = await starting
+
+    const typesPath = join(dir, ".clove", "types.d.ts")
+    for (let i = 0; i < 50; i++) {
+      if ((await readFile(typesPath, "utf8")).includes("mailer")) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    expect(await readFile(typesPath, "utf8")).toContain("mailer")
+
+    // And the route it defines is actually being served, not just typed.
+    const body = await waitFor(`${dev.url}/api/hello`, (b) => b.message === "hi")
+    expect(body).toEqual({ message: "hi" })
+  })
+
+  it("collapses a burst of saves into a single rebuild", async () => {
+    dir = await project({
+      "api/hello.get.ts": route("one"),
+      "services/keep.ts": `import { service } from "clovejs"\nexport default service(async () => ({}))\n`,
+    })
+    dev = await startDevServer({
+      rootDir: dir,
+      port: 0,
+      host: "127.0.0.1",
+      logLevel: "silent",
+    })
+
+    // Ten files at once, as a branch switch or a formatter run would produce.
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        writeFile(
+          join(dir!, `services/svc${i}.ts`),
+          `import { service } from "clovejs"\nexport default service(async () => ({ n: () => ${i} }))\n`,
+          "utf8",
+        ),
+      ),
+    )
+
+    const typesPath = join(dir, ".clove", "types.d.ts")
+    for (let i = 0; i < 50; i++) {
+      if ((await readFile(typesPath, "utf8")).includes("svc9")) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    const types = await readFile(typesPath, "utf8")
+    for (let i = 0; i < 10; i++) expect(types).toContain(`svc${i}`)
+    expect(await waitFor(`${dev.url}/api/hello`, (b) => b.message === "one")).toEqual({
+      message: "one",
+    })
+  })
 })
