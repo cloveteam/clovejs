@@ -4,10 +4,10 @@
 
 # CloveJS
 
-**Files in, routes out.**
-
-A convention-driven Node.js HTTP framework. Routes, services, middlewares and
-injectables are discovered from the filesystem — there is nothing to register.
+The backend framework that configures itself. CloveJS brings
+Next.js/Nuxt-inspired file-based routing to Node.js — your folder structure
+defines your routes, services, middlewares and injectables, fully typed,
+with zero manual registration.
 
 [![CI](https://github.com/cloveteam/clovejs/actions/workflows/ci.yml/badge.svg)](https://github.com/cloveteam/clovejs/actions/workflows/ci.yml)
 <!-- Uncomment once the package is published to npm; until then it renders red.
@@ -26,11 +26,11 @@ injectables are discovered from the filesystem — there is nothing to register.
 
 ---
 
-- 🗂️ **Nothing to wire up.** Drop a file in a directory and it is live.
-- 🔤 **TypeScript from the box.** `ctx` is fully typed via generated declarations.
+- 🗂️ **Nothing to wire up.** Next.js/Nuxt-inspired file-based routing — drop a file in a directory and it is live.
+- 🔤 **TypeScript from the box.** Fully typed, automatically — no manual annotations, ever.
 - 🧩 **DI in the box.** Singleton, session and request lifetime scopes.
 - 🔌 **WebSockets included.** Same conventions, `[param]` segments and all.
-- 🤝 **Drops into Express.** Unmatched requests fall through to your own stack.
+- 🤝 **Adopts incrementally.** Mount Clove in an app you already have and migrate routes over at your own pace.
 - 🤖 **Agent-ready.** `npx clove skills` teaches your AI editor the conventions.
 
 ```bash
@@ -358,7 +358,9 @@ const server = app.listen(3000)
 clove.attachUpgrade(server)   // only if you use WebSockets
 ```
 
-Requests that match no Clove route fall through to the host's own stack.
+This lets you adopt Clove inside an app you already have — existing Express
+routes keep running unchanged while you migrate to Clove's conventions one
+route at a time.
 
 ## Example
 
@@ -446,6 +448,12 @@ with no manual declaration.
 
 Generation is a path-level scan — files are never executed — so it stays fast
 and cannot be broken by a module that throws at import time.
+
+## Contributing
+
+Contributions are welcome — bug fixes, new conventions, docs, examples, all of
+it. See [CONTRIBUTING.md](./CONTRIBUTING.md) for local setup, the checks CI
+runs, and how to open a pull request.
 
 ## License
 

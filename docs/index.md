@@ -4,7 +4,7 @@ layout: home
 hero:
   name: CloveJS
   text: Files in, routes out.
-  tagline: A convention-driven Node.js HTTP framework. Routes, services, middlewares and injectables are discovered from the filesystem — there is nothing to register.
+  tagline: The backend framework that configures itself. CloveJS brings Next.js/Nuxt-inspired file-based routing to Node.js — your folder structure defines your routes, services, middlewares and injectables, fully typed, with zero manual registration.
   image:
     src: /logo.svg
     alt: CloveJS
@@ -22,7 +22,7 @@ hero:
 features:
   - icon: 🗂️
     title: Nothing to wire up
-    details: Drop a file into api/, ws/, services/, di/ or middlewares/ and it is live. No decorators, no module graph, no registration calls.
+    details: Next.js/Nuxt-inspired file-based routing for your backend. Drop a file into api/, ws/, services/, di/ or middlewares/ and it is live. No decorators, no module graph, no registration calls.
     link: /guide/project-structure
     linkText: Project structure
   - icon: 🧩
@@ -32,7 +32,7 @@ features:
     linkText: Lifetimes
   - icon: 🔤
     title: TypeScript from the box
-    details: ctx is fully typed from generated declarations — one entry per file in services/ and di/, written by a path-level scan that never executes your code.
+    details: Fully typed, automatically, from generated declarations — one entry per file in services/ and di/, written by a path-level scan that never executes your code.
     link: /guide/typed-context
     linkText: Typed context
   - icon: 🔌
@@ -41,8 +41,8 @@ features:
     link: /guide/websockets
     linkText: WebSockets
   - icon: 🤝
-    title: Drops into Express
-    details: Mount Clove alongside an app you already have. Unmatched requests fall straight through to the host's own stack.
+    title: Adopts incrementally
+    details: Mount Clove inside an Express app you already have and migrate routes over at your own pace.
     link: /guide/express-interop
     linkText: Express interop
   - icon: ⚡

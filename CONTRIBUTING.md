@@ -60,18 +60,24 @@ npm run lint && npm run typecheck && npm run build && npm test
   document.
 - Update [`README.md`](./README.md) or the [`docs/`](./docs) site when you
   change or add user-facing behavior.
-- Write clear, present-tense commit messages (e.g. `fix: correct route
-  matching for optional params`). Squash noisy WIP commits before opening the
-  PR if you can.
+- Write commit messages following [Conventional Commits](https://www.conventionalcommits.org/)
+  (e.g. `fix: correct route matching for optional params`,
+  `feat: add support for nested layouts`). Squash noisy WIP commits before
+  opening the PR if you can.
 
 ## Opening a pull request
+
+Before you start work, make sure a [GitHub issue](https://github.com/cloveteam/clovejs/issues)
+exists describing the bug or feature — open one yourself if it doesn't. This
+lets maintainers weigh in on the approach before you invest time, and gives
+the PR something to link back to.
 
 1. Create a branch off `main`: `git checkout -b my-fix main`.
 2. Make your changes, with tests, and verify the checks above pass locally.
 3. Push your branch to your fork and open a pull request against
    `cloveteam/clovejs:main`.
 4. Fill in the PR description: what changed and why, and how you tested it.
-   Link any related issue.
+   Link the issue from step 0.
 5. A maintainer will review, and CI must be green before merge. Be responsive
    to review feedback — most PRs need at least one round of changes.
 6. Once merged, feel free to add yourself to [`CONTRIBUTORS.md`](./CONTRIBUTORS.md)

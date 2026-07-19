@@ -13,8 +13,9 @@ const server = app.listen(3000)
 clove.attachUpgrade(server)   // only if you use WebSockets
 ```
 
-Requests that match no Clove route fall through to the host's own stack, so
-existing routes keep working and can be migrated one at a time.
+This lets you adopt Clove inside an app you already have. Existing Express
+routes keep running unchanged while you migrate to Clove's conventions one
+route at a time.
 
 ## Mounting manually
 
