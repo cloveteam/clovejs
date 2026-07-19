@@ -17,7 +17,7 @@ hero:
       link: /guide/what-is-clovejs
     - theme: alt
       text: View on GitHub
-      link: https://github.com/lexkrstn/clovejs
+      link: https://github.com/cloveteam/clovejs
 
 features:
   - icon: 🗂️

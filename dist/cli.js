@@ -6,12 +6,12 @@ import {
   deriveContextKey,
   resolveSourceDir,
   walkDir
-} from "./chunk-ZGXC75VM.js";
+} from "./chunk-O7VDY6JW.js";
 
 // src/cli/index.ts
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/codegen/index.ts
 import { mkdir, writeFile, readFile } from "fs/promises";
@@ -227,7 +227,7 @@ async function scaffold(options) {
   const base = typescript ? join3(rootDir, "src") : rootDir;
   const created = [];
   const skipped = [];
-  const write = async (path, contents) => {
+  const write2 = async (path, contents) => {
     const full = join3(rootDir, path);
     if (!options.force && await exists(full)) {
       skipped.push(path);
@@ -241,14 +241,14 @@ async function scaffold(options) {
     await mkdir2(join3(base, dir), { recursive: true });
   }
   const prefix = typescript ? "src/" : "";
-  await write(
+  await write2(
     `${prefix}main.${ext}`,
     `import { bootstrap } from "clovejs"
 
 bootstrap()
 `
   );
-  await write(
+  await write2(
     `${prefix}api/hello.get.${ext}`,
     typescript ? `import { get } from "clovejs"
 
@@ -262,7 +262,7 @@ export default get(async (req, res, ctx) => {
 })
 `
   );
-  await write(
+  await write2(
     `${prefix}di/config.${ext}`,
     `import { di } from "clovejs"
 
@@ -274,7 +274,7 @@ export default di({
 })
 `
   );
-  await write(
+  await write2(
     `${prefix}services/greeter.${ext}`,
     `import { service } from "clovejs"
 
@@ -286,7 +286,7 @@ export default service(async (ctx) => ({
 `
   );
   if (typescript) {
-    await write(
+    await write2(
       "tsconfig.json",
       JSON.stringify(
         {
@@ -308,7 +308,7 @@ export default service(async (ctx) => ({
       ) + "\n"
     );
   }
-  await write(
+  await write2(
     ".gitignore",
     ["node_modules/", "dist/", ".clove/", ".env", ""].join("\n")
   );
@@ -336,6 +336,407 @@ async function exists(path) {
   }
 }
 
+// src/cli/skills/index.ts
+import { mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "fs/promises";
+import { join as join4 } from "path";
+
+// src/cli/skills/content.ts
+var SKILL_NAME = "clovejs";
+var SKILL_DESCRIPTION = "Conventions for writing CloveJS code \u2014 file-based routes, services, DI lifetimes, middlewares, WebSockets and the CLI. Use whenever editing a project that depends on the `clovejs` package.";
+var SKILL_GLOBS = [
+  "**/api/**",
+  "**/ws/**",
+  "**/di/**",
+  "**/services/**",
+  "**/middlewares/**",
+  "**/main.ts",
+  "**/main.js"
+];
+var SKILL_BODY = `
+CloveJS is a convention-driven Node.js HTTP framework. Routes, services,
+middlewares and injectables are discovered from the filesystem \u2014 **there is no
+registration step and no central config to edit**. Adding behaviour means
+adding a file in the right place with the right name.
+
+## Project layout
+
+TypeScript projects keep sources under \`src/\`; JavaScript projects put the
+same directories at the repository root. Both are detected automatically \u2014
+match whichever the project already uses.
+
+\`\`\`
+src/
+  api/          route handlers      -> HTTP endpoints
+  ws/           socket handlers     -> WebSocket endpoints
+  di/           injectable values
+  services/     injectable services
+  middlewares/  request middlewares
+  main.ts       bootstrap()
+.clove/         generated types (gitignored \u2014 never edit by hand)
+\`\`\`
+
+## Routes
+
+A file's default export becomes an endpoint. \`api/v1/login.post.ts\` serves
+\`POST /api/v1/login\`:
+
+\`\`\`ts
+import { post, error } from "clovejs"
+
+export default post(async (req, res, ctx) => {
+  if (!req.body.username) {
+    throw error(400, { message: "username is required" })
+  }
+  return ctx.users.findByName(req.body.username)
+})
+\`\`\`
+
+Wrappers: \`get\`, \`post\`, \`put\`, \`patch\`, \`del\`, \`head\`, \`options\`,
+\`all\`. The \`.{method}.ts\` suffix is conventional and may be omitted, but the
+filename and the wrapper must agree \u2014 if they disagree the project refuses to
+boot and names the offending file.
+
+\`[param]\` segments capture path parameters, in either file or directory form:
+
+| Request | File |
+| --- | --- |
+| \`GET /api/v1/users\` | \`api/v1/users.get.ts\` or \`api/v1/users/get.ts\` |
+| \`GET /api/v1/users/1\` | \`api/v1/users/[id].get.ts\` |
+| \`GET /api/v1/users/1/books/2\` | \`api/v1/users/[userId]/books/[bookId].get.ts\` |
+
+Params arrive as strings on \`req.params\` \u2014 parse them yourself. A literal
+segment always beats a parameter, so \`users/me.get.ts\` wins for \`/users/me\`.
+
+Attach metadata for middlewares to read as \`route.meta.*\`:
+
+\`\`\`ts
+export default get(async (req, res, ctx) => { /* ... */ }).meta({ adminOnly: true })
+\`\`\`
+
+## Return values (the JSON middleware)
+
+Enabled for every route by default:
+
+| Handler returns | Response |
+| --- | --- |
+| object or array | \`200\` with a JSON body |
+| \`undefined\` | \`204 No Content\` |
+| \`null\` from a \`GET\` | \`404 Not Found\` |
+| \`null\` from another method | \`204 No Content\` |
+
+Prefer returning data over calling \`res\` methods. The middleware steps aside
+when the handler picks a non-JSON content type (\`res.type("html")\`) or opts
+out with \`.meta({ json: false })\`.
+
+## Errors
+
+\`error(status, body)\` produces a response instead of a crash; anything else
+escaping a handler becomes a \`500\` with details logged. Stacks reach the
+response body only outside production.
+
+\`\`\`ts
+throw error(404, { message: "No such user" })
+\`\`\`
+
+## Services
+
+Files in \`services/\` are singletons created at boot and injected into \`ctx\`
+under their filename \u2014 \`services/auth.ts\` becomes \`ctx.auth\`.
+
+\`\`\`ts
+import { service, error } from "clovejs"
+
+export default service(async (ctx, { onDestroy }) => {
+  onDestroy(async () => { /* teardown */ })
+
+  return {
+    async login(params: LoginParams) {
+      const user = await ctx.db.user.find(params)
+      if (!user) throw error(401, { message: "Bad credentials" })
+      return user
+    },
+  }
+})
+\`\`\`
+
+**Call siblings through a local function in the closure, not \`this.other()\`.**
+TypeScript cannot infer a method's return type when it depends on the object
+literal containing it, so \`this\` forces hand-written return type annotations.
+
+## DI values and lifetime scopes
+
+Files in \`di/\` inject plain values, each declaring how long it lives:
+\`singleton\` (the process), \`session\` (one visitor) or \`request\`.
+
+\`\`\`ts
+import { di } from "clovejs"
+
+export default di({ lifetime: "session", value: null as User | null })
+\`\`\`
+
+Assigning from a middleware writes into the declared scope:
+\`ctx.currentUser = await ctx.auth.verify(req.cookie.token)\`.
+
+A value may instead be computed, with access to other dependencies and to
+teardown hooks:
+
+\`\`\`ts
+export default di({
+  lifetime: "singleton",
+  async value(ctx, { onDestroy }) {
+    const client = new Client(ctx.config.db)
+    await client.connect()
+    onDestroy(async () => client.end())
+    return client
+  },
+})
+\`\`\`
+
+**Resolution rules.** Singletons all resolve before traffic is accepted, so
+reading \`ctx.db\` from a handler or service method is synchronous and safe.
+Inside a *factory*, \`await\` whatever you depend on \u2014 awaiting a plain value is
+harmless, so awaiting uniformly is always correct. Session- and request-scoped
+factories resolve on first access in their scope, so that first read is a
+promise.
+
+## Middlewares
+
+Every file in \`middlewares/\` wraps every route. Code before
+\`handler.execute()\` runs inbound, code after it outbound; returning without
+calling it short-circuits.
+
+\`\`\`ts
+import { middleware, error } from "clovejs"
+
+export default middleware(async ({ route, handler, ctx }) => {
+  if (route.meta.adminOnly && !ctx.currentUser?.isAdmin) {
+    throw error(403, { message: "Forbidden" })
+  }
+  return handler.execute()
+})
+\`\`\`
+
+Ordering is alphabetical by default. Pin it with a numeric suffix \u2014 lower runs
+first, and fractional suffixes let you insert without renaming:
+
+\`\`\`
+middlewares/
+  trace.0.ts         first
+  authenticate.1.ts
+  audit.1.2.ts       between .1 and .2
+  authorize.2.ts
+  stamp.ts           unnumbered: after everything numbered
+\`\`\`
+
+## WebSockets
+
+Files in \`ws/\` map to socket endpoints like routes do, \`[param]\` segments
+included. \`ws/echo.ts\` serves \`/ws/echo\`:
+
+\`\`\`ts
+import { ws } from "clovejs"
+
+export default ws(async ({ onMessage, onDestroy, send, ctx, params }) => {
+  onMessage((msg) => send(msg))
+  onDestroy(async () => { /* cleanup */ })
+})
+\`\`\`
+
+Each connection gets its own request-scoped container, disposed when the socket
+closes. **HTTP middlewares do not run for upgrades** \u2014 authenticate inside the
+handler using \`ctx\`.
+
+## Sessions
+
+Declaring any \`session\`-scoped value turns sessions on. Visitors are
+identified by a signed \`clove.sid\` cookie issued only when a session is
+actually needed. Set \`CLOVE_SECRET\` (or pass \`sessionSecret\`) in production,
+or sessions will not survive a restart.
+
+The default store is in-memory. To replace it, define
+\`services/sessionStore.ts\` returning \`get\`, \`set\`, \`touch\` and
+\`destroy\` \u2014 it is picked up automatically.
+
+## Bootstrap and Express interop
+
+\`\`\`ts
+import { bootstrap } from "clovejs"
+
+bootstrap()
+\`\`\`
+
+Alongside an existing Express app:
+
+\`\`\`ts
+import { engine } from "clovejs"
+
+const app = express()
+const clove = await engine(app)
+const server = app.listen(3000)
+clove.attachUpgrade(server)   // only if you use WebSockets
+\`\`\`
+
+Requests matching no Clove route fall through to the host's own stack.
+
+## CLI
+
+| Command | Purpose |
+| --- | --- |
+| \`clove dev\` | Run with file watching and type generation |
+| \`clove build\` | Generate types, then compile with \`tsc\` |
+| \`clove types\` | Regenerate \`.clove/types.d.ts\` only |
+| \`clove scaffold\` | Create the default structure (\`--js\` for JavaScript) |
+| \`clove routes\` | Print the resolved route table |
+| \`clove skills\` | Install these instructions for AI editors |
+
+Every command takes \`--dir <path>\` to target another project root.
+
+## Typed context
+
+\`clove dev\` and \`clove build\` write \`.clove/types.d.ts\`, augmenting the
+\`Ctx\` interface with one entry per file in \`services/\` and \`di/\`. After
+adding or renaming a provider, run \`npx clove types\` so \`ctx\` type-checks \u2014
+generation is a path-level scan, so it never executes project code.
+
+## Checklist when editing a CloveJS project
+
+- Put the file where the convention says; do not add a registry or router.
+- Match the wrapper to the filename's method suffix.
+- Return data and let the JSON middleware respond; throw \`error()\` for
+  failures.
+- Reach dependencies through \`ctx\`, never by importing another provider
+  module directly.
+- Run \`npx clove routes\` to confirm a filename produced the URL you expected,
+  and \`npx clove types\` after touching \`services/\` or \`di/\`.
+`.trim();
+
+// src/cli/skills/index.ts
+var BEGIN = "<!-- clovejs:begin -->";
+var END = "<!-- clovejs:end -->";
+var GENERATED = "Generated by `npx clove skills`. Re-run it to update.";
+function frontMatter(fields) {
+  const lines = Object.entries(fields).map(([key, value]) => {
+    if (Array.isArray(value)) return `${key}: ${value.join(",")}`;
+    if (typeof value === "boolean") return `${key}: ${value}`;
+    return `${key}: ${value.includes(":") ? JSON.stringify(value) : value}`;
+  });
+  return `---
+${lines.join("\n")}
+---
+`;
+}
+var TARGETS = [
+  {
+    id: "claude",
+    label: "Claude Code",
+    path: `.claude/skills/${SKILL_NAME}/SKILL.md`,
+    mode: "own",
+    render: () => frontMatter({ name: SKILL_NAME, description: SKILL_DESCRIPTION }) + `
+# CloveJS
+
+${SKILL_BODY}
+`
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    path: `.cursor/rules/${SKILL_NAME}.mdc`,
+    mode: "own",
+    render: () => frontMatter({
+      description: SKILL_DESCRIPTION,
+      globs: SKILL_GLOBS,
+      alwaysApply: false
+    }) + `
+# CloveJS
+
+${SKILL_BODY}
+`
+  },
+  {
+    id: "antigravity",
+    label: "Antigravity",
+    path: `.antigravity/rules/${SKILL_NAME}.md`,
+    mode: "own",
+    render: () => frontMatter({ description: SKILL_DESCRIPTION, globs: SKILL_GLOBS }) + `
+# CloveJS
+
+${SKILL_BODY}
+`
+  },
+  {
+    // Codex reads AGENTS.md, as do Gemini CLI, Jules, Amp and others. It is a
+    // project-owned file, so we contribute a block rather than the whole file.
+    id: "codex",
+    label: "Codex (AGENTS.md)",
+    path: "AGENTS.md",
+    mode: "share",
+    render: () => `## CloveJS
+
+${SKILL_BODY}
+`
+  }
+];
+function unknownIdes(ides) {
+  const known = new Set(TARGETS.map((t) => t.id));
+  return ides.filter((id) => !known.has(id));
+}
+async function installSkills(options) {
+  const { rootDir, force = false } = options;
+  const ids = options.ides?.length ? new Set(options.ides) : null;
+  const targets = ids ? TARGETS.filter((t) => ids.has(t.id)) : TARGETS;
+  const result = { written: [], updated: [], skipped: [] };
+  for (const target of targets) {
+    const full = join4(rootDir, target.path);
+    const existing = await readFile3(full, "utf8").catch(() => null);
+    if (target.mode === "own") {
+      if (existing !== null && !force) {
+        result.skipped.push(target.path);
+        continue;
+      }
+      await write(full, target.render());
+      (existing === null ? result.written : result.updated).push(target.path);
+      continue;
+    }
+    const block = `${BEGIN}
+<!-- ${GENERATED} -->
+
+${target.render().trim()}
+${END}`;
+    if (existing === null) {
+      await write(full, `# AGENTS.md
+
+${block}
+`);
+      result.written.push(target.path);
+      continue;
+    }
+    const merged = mergeBlock(existing, block);
+    if (merged === existing) {
+      result.skipped.push(target.path);
+      continue;
+    }
+    await write(full, merged);
+    result.updated.push(target.path);
+  }
+  return result;
+}
+function mergeBlock(existing, block) {
+  const start = existing.indexOf(BEGIN);
+  const end = existing.indexOf(END);
+  if (start !== -1 && end > start) {
+    const replaced = existing.slice(0, start) + block + existing.slice(end + END.length);
+    return replaced === existing ? existing : replaced;
+  }
+  return `${existing.replace(/\s*$/, "")}
+
+${block}
+`;
+}
+async function write(full, contents) {
+  await mkdir3(join4(full, ".."), { recursive: true });
+  await writeFile3(full, contents, "utf8");
+}
+
 // src/cli/index.ts
 var USAGE = `
 clove \u2014 CloveJS project commands
@@ -345,6 +746,7 @@ clove \u2014 CloveJS project commands
   clove types                           Generate .clove/types.d.ts only
   clove scaffold [--js] [--force]       Create the default project structure
   clove routes                          Print the resolved route table
+  clove skills [--ide <a,b>] [--force]  Install CloveJS instructions for AI editors
 
 Options:
   --dir <path>   Project root (defaults to the current directory)
@@ -397,7 +799,7 @@ async function main() {
     }
     case "build": {
       await generateTypes({ rootDir, sourceDir });
-      if (!existsSync(join4(rootDir, "tsconfig.json"))) {
+      if (!existsSync(join5(rootDir, "tsconfig.json"))) {
         console.log("No tsconfig.json found \u2014 nothing to compile.");
         return;
       }
@@ -427,8 +829,32 @@ Done. Run \`npm run dev\` to start the server.` + (result.skipped.length ? " Use
       );
       return;
     }
+    case "skills": {
+      const ides = typeof flags.ide === "string" ? flags.ide.split(",").map((id) => id.trim()).filter(Boolean) : [];
+      const unknown = unknownIdes(ides);
+      if (unknown.length) {
+        console.error(`Unknown editor: ${unknown.join(", ")}
+`);
+        console.error(`Known editors: ${TARGETS.map((t) => t.id).join(", ")}`);
+        process.exitCode = 1;
+        return;
+      }
+      const result = await installSkills({
+        rootDir,
+        ides,
+        force: Boolean(flags.force)
+      });
+      for (const file of result.written) console.log(`  created  ${file}`);
+      for (const file of result.updated) console.log(`  updated  ${file}`);
+      for (const file of result.skipped) console.log(`  skipped  ${file} (exists)`);
+      console.log(
+        `
+Done. Your assistant picks these up on its next session.` + (result.skipped.length ? " Use --force to overwrite skipped files." : "")
+      );
+      return;
+    }
     case "routes": {
-      const { createApp: createApp2 } = await import("./app-TRCXX3NR.js");
+      const { createApp: createApp2 } = await import("./app-3PUEN3HT.js");
       const app = await createApp2({ rootDir, logLevel: "silent" });
       for (const route of app.routes.list()) {
         console.log(`${route.method.padEnd(7)} ${route.path}`);

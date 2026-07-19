@@ -6,6 +6,7 @@ import { startDevServer } from "../dev/index.js"
 import { CloveBootError } from "../errors.js"
 import { resolveSourceDir } from "../scanner/index.js"
 import { scaffold } from "./scaffold.js"
+import { installSkills, unknownIdes, TARGETS } from "./skills/index.js"
 
 const USAGE = `
 clove — CloveJS project commands
@@ -15,6 +16,7 @@ clove — CloveJS project commands
   clove types                           Generate .clove/types.d.ts only
   clove scaffold [--js] [--force]       Create the default project structure
   clove routes                          Print the resolved route table
+  clove skills [--ide <a,b>] [--force]  Install CloveJS instructions for AI editors
 
 Options:
   --dir <path>   Project root (defaults to the current directory)
@@ -108,6 +110,35 @@ async function main(): Promise<void> {
       for (const file of result.skipped) console.log(`  skipped  ${file} (exists)`)
       console.log(
         `\nDone. Run \`npm run dev\` to start the server.` +
+          (result.skipped.length ? " Use --force to overwrite skipped files." : ""),
+      )
+      return
+    }
+
+    case "skills": {
+      const ides =
+        typeof flags.ide === "string"
+          ? flags.ide.split(",").map((id) => id.trim()).filter(Boolean)
+          : []
+
+      const unknown = unknownIdes(ides)
+      if (unknown.length) {
+        console.error(`Unknown editor: ${unknown.join(", ")}\n`)
+        console.error(`Known editors: ${TARGETS.map((t) => t.id).join(", ")}`)
+        process.exitCode = 1
+        return
+      }
+
+      const result = await installSkills({
+        rootDir,
+        ides,
+        force: Boolean(flags.force),
+      })
+      for (const file of result.written) console.log(`  created  ${file}`)
+      for (const file of result.updated) console.log(`  updated  ${file}`)
+      for (const file of result.skipped) console.log(`  skipped  ${file} (exists)`)
+      console.log(
+        `\nDone. Your assistant picks these up on its next session.` +
           (result.skipped.length ? " Use --force to overwrite skipped files." : ""),
       )
       return

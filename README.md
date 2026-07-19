@@ -14,7 +14,7 @@ npx clove scaffold      # create the default project structure
 npm run dev
 ```
 
-📖 **[Full documentation](https://lexkrstn.github.io/clovejs/)** — guides, API
+📖 **[Full documentation](https://cloveteam.github.io/clovejs/)** — guides, API
 reference and deployment notes. Sources live in [`docs/`](./docs).
 
 ## Contents
@@ -32,6 +32,7 @@ reference and deployment notes. Sources live in [`docs/`](./docs).
 - [Sessions](#sessions)
 - [Bootstrap and Express interop](#bootstrap-and-express-interop)
 - [CLI](#cli)
+- [AI editor support](#ai-editor-support)
 - [Typed context](#typed-context)
 
 ## Project structure
@@ -342,9 +343,31 @@ Requests that match no Clove route fall through to the host's own stack.
 | `clove types` | Regenerate `.clove/types.d.ts` only |
 | `clove scaffold` | Create the default structure (`--js` for JavaScript) |
 | `clove routes` | Print the resolved route table |
+| `clove skills` | Install CloveJS instructions for AI editors |
 
 Scaffolding is an explicit command rather than an install-time prompt: package
 managers suppress or sandbox `postinstall`, and prompts break CI.
+
+## AI editor support
+
+A convention-driven framework is only pleasant if your assistant knows the
+conventions. One command writes them in each editor's own format:
+
+```bash
+npx clove skills                      # all of them
+npx clove skills --ide cursor,codex   # or pick
+```
+
+| Editor | File |
+| --- | --- |
+| Claude Code | `.claude/skills/clovejs/SKILL.md` |
+| Cursor | `.cursor/rules/clovejs.mdc` |
+| Antigravity | `.antigravity/rules/clovejs.md` |
+| Codex, Gemini CLI, Jules, … | `AGENTS.md` |
+
+`AGENTS.md` is shared with your own instructions, so the command maintains a
+single `<!-- clovejs:begin -->` block there and leaves the rest of the file
+alone. Re-run it after upgrading CloveJS; it refreshes in place.
 
 ## Typed context
 

@@ -8,6 +8,7 @@ clove — CloveJS project commands
   clove types                           Generate .clove/types.d.ts only
   clove scaffold [--js] [--force]       Create the default project structure
   clove routes                          Print the resolved route table
+  clove skills [--ide <a,b>] [--force]  Install CloveJS instructions for AI editors
 
 Options:
   --dir <path>   Project root (defaults to the current directory)
@@ -96,6 +97,57 @@ POST    /api/v1/login
 The fastest way to confirm that a filename produced the URL you expected. It
 boots the app with logging silenced, so convention violations still surface as
 [boot errors](/guide/errors#boot-errors).
+
+## `clove skills`
+
+Teaches AI coding assistants the framework's conventions, so they stop
+inventing route registries and reach for `ctx` instead of importing providers
+directly.
+
+```bash
+npx clove skills
+```
+
+One body of guidance is written in each editor's own format:
+
+| Editor | File |
+| --- | --- |
+| Claude Code | `.claude/skills/clovejs/SKILL.md` |
+| Cursor | `.cursor/rules/clovejs.mdc` |
+| Antigravity | `.antigravity/rules/clovejs.md` |
+| Codex, Gemini CLI, Jules, … | `AGENTS.md` |
+
+| Flag | Meaning |
+| --- | --- |
+| `--ide <a,b>` | Only these editors — `claude`, `cursor`, `antigravity`, `codex` |
+| `--force` | Overwrite editor files that already exist |
+
+```bash
+npx clove skills --ide cursor,codex
+```
+
+Files under `.cursor/`, `.claude/` and `.antigravity/` belong to the command:
+without `--force` an existing one is reported as `skipped` and left untouched.
+
+`AGENTS.md` belongs to your project and usually holds instructions of your own,
+so it is treated differently — the command maintains a single delimited block
+and preserves everything around it:
+
+```markdown
+# AGENTS.md
+
+Your own house rules stay exactly where they are.
+
+<!-- clovejs:begin -->
+## CloveJS
+...
+<!-- clovejs:end -->
+```
+
+Re-running the command refreshes that block in place rather than appending a
+second copy, so upgrading CloveJS and re-running is idempotent. Commit the
+generated files: they are project configuration, and everyone working in the
+repository benefits from them.
 
 ## `--dir`
 
