@@ -34,6 +34,9 @@
     "templates",
     "README.md"
   ],
+  "workspaces": [
+    "examples/*"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

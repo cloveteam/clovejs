@@ -6,6 +6,11 @@ coverage/
 .env
 .env.local
 
+# Clove-generated
+.clove/
+examples/*/dist/
+examples/*/.clove/
+
 # VitePress
 docs/.vitepress/dist/
 docs/.vitepress/cache/

@@ -56,6 +56,7 @@ reference and deployment notes. Sources live in [`docs/`](./docs).
 - 🔌 [WebSockets](#websockets)
 - 🍪 [Sessions](#sessions)
 - 🤝 [Bootstrap and Express interop](#bootstrap-and-express-interop)
+- 🧪 [Example](#example)
 - ⌨️ [CLI](#cli)
 - 🤖 [AI editor support](#ai-editor-support)
 - 🔤 [Typed context](#typed-context)
@@ -358,6 +359,48 @@ clove.attachUpgrade(server)   // only if you use WebSockets
 ```
 
 Requests that match no Clove route fall through to the host's own stack.
+
+## Example
+
+A runnable app exercising every convention above — routes, all three DI
+lifetimes, middleware ordering, sessions, WebSockets — lives in
+[`examples/basic`](./examples/basic):
+
+```bash
+git clone https://github.com/cloveteam/clovejs.git
+cd clovejs
+npm install
+npm run dev -w clovejs-example-basic
+```
+
+Then, from another terminal:
+
+```bash
+# Public
+curl localhost:3000/api/notes
+
+# Guarded — 401 until you log in
+curl localhost:3000/api/me
+
+# Log in (ada/secret or grace/secret — see examples/basic/src/services/auth.ts)
+curl -c cookies.txt -X POST localhost:3000/api/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"ada","password":"secret"}'
+
+# The clove.sid cookie now carries the session
+curl -b cookies.txt localhost:3000/api/me
+
+# ada is an admin; grace is not
+curl -b cookies.txt localhost:3000/api/admin/stats
+```
+
+[`examples/basic/README.md`](./examples/basic/README.md) maps each file in the
+example to the concept it demonstrates.
+
+Prefer clicking through requests to typing them? [`examples/basic/requests.http`](./examples/basic/requests.http)
+covers the same flow, no Postman account required — it's read natively by
+JetBrains IDEs and by VS Code's [REST Client
+extension](https://marketplace.visualstudio.com/items?itemName=humao.rest-client).
 
 ## CLI
 

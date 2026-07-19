@@ -1,0 +1,84 @@
+# CloveJS basic example — HTTP requests
+#
+# A dependency-free alternative to a Postman/Insomnia collection: this plain
+# text format is read natively by JetBrains IDEs (Run > HTTP Client) and by
+# VS Code's "REST Client" extension (humao.rest-client) — no app install, no
+# account, no cloud sync. Click "Send Request" above any block, or run them
+# top to bottom.
+#
+# Start the server first: npm run dev -w clovejs-example-basic
+
+@baseUrl = http://localhost:3000
+@wsUrl = ws://localhost:3000
+
+### Hello world
+GET {{baseUrl}}/api/hello
+
+### List notes (public) — an array return becomes 200
+GET {{baseUrl}}/api/notes
+
+### Who am I? — no session yet, so 401
+GET {{baseUrl}}/api/me
+
+### Log in as ada (admin). Both tools keep a cookie jar per file, so the
+### clove.sid this sets is sent automatically by every request below.
+POST {{baseUrl}}/api/login
+Content-Type: application/json
+
+{
+  "username": "ada",
+  "password": "secret"
+}
+
+### Who am I? — now 200, from the session
+GET {{baseUrl}}/api/me
+
+### Admin-only route — ada is an admin
+GET {{baseUrl}}/api/admin/stats
+
+### Fetch the seeded note by id — 200
+GET {{baseUrl}}/api/notes/1
+
+### Create a note — 201, returns the created note
+POST {{baseUrl}}/api/notes
+Content-Type: application/json
+
+{
+  "title": "From requests.http",
+  "body": "Created via the REST Client / HTTP Client"
+}
+
+### Delete the seeded note — 204
+DELETE {{baseUrl}}/api/notes/1
+
+### Fetch it again — gone now, so 404
+GET {{baseUrl}}/api/notes/1
+
+### Log out
+POST {{baseUrl}}/api/logout
+
+### Who am I? — 401 again
+GET {{baseUrl}}/api/me
+
+### Log in as grace (not an admin)
+POST {{baseUrl}}/api/login
+Content-Type: application/json
+
+{
+  "username": "grace",
+  "password": "secret"
+}
+
+### Admin-only route as grace — 403 Forbidden
+GET {{baseUrl}}/api/admin/stats
+
+### WebSocket echo — JetBrains HTTP Client only (WebStorm/IntelliJ 2023.2+).
+### VS Code's REST Client extension has no WebSocket support;
+### use `npx wscat -c ws://localhost:3000/ws/echo`
+### there instead — see src/ws/echo.ts.
+WEBSOCKET {{wsUrl}}/ws/echo
+
+Hello over WebSocket
+===
+wait-for-server
+Sent after the echo comes back
