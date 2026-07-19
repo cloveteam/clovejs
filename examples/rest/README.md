@@ -1,9 +1,12 @@
-# CloveJS — basic example
+# CloveJS — REST example
 
-A small notes API that exercises the core conventions in one runnable app:
-routes and route parameters, the JSON middleware's status-code rules, the
-three DI lifetimes, middleware ordering, sessions, WebSockets, and an MCP
-server sharing the same services.
+A small notes API that exercises the core HTTP conventions in one runnable
+app: routes and route parameters, the JSON middleware's status-code rules, the
+three DI lifetimes, middleware ordering, and sessions.
+
+Two sibling examples pick up where this one stops: [`../mcp`](../mcp) exposes
+the same services over the Model Context Protocol, and
+[`../websocket`](../websocket) covers real-time connections.
 
 ## Run it
 
@@ -12,13 +15,13 @@ covers it):
 
 ```bash
 npm install
-npm run dev -w clovejs-example-basic
+npm run dev -w clovejs-example-rest
 ```
 
 Or from this directory once the root install has run:
 
 ```bash
-cd examples/basic
+cd examples/rest
 npm run dev
 ```
 
@@ -38,51 +41,6 @@ Visit `http://localhost:3000/api/hello`.
 | [`src/di/requestId.ts`](./src/di/requestId.ts) | `request` lifetime, computed with a factory |
 | [`src/middlewares/trace.0.ts`](./src/middlewares/trace.0.ts), [`src/middlewares/authorize.1.ts`](./src/middlewares/authorize.1.ts) | Numeric middleware ordering; code on both sides of `handler.execute()` |
 | [`src/api/admin/stats.get.ts`](./src/api/admin/stats.get.ts) | Route metadata, read by a middleware |
-| [`src/ws/echo.ts`](./src/ws/echo.ts) | WebSockets |
-| [`src/mcp/tools/searchNotes.ts`](./src/mcp/tools/searchNotes.ts) | An MCP tool: zod input, typed handler, `.meta()` annotations |
-| [`src/mcp/tools/login.ts`](./src/mcp/tools/login.ts), [`src/mcp/tools/whoami.ts`](./src/mcp/tools/whoami.ts) | Session-scoped DI across MCP calls; a `4xx` as a readable tool failure |
-| [`src/mcp/resources/notes/[id].ts`](./src/mcp/resources/notes/%5Bid%5D.ts) | A resource template, `notes://{id}` |
-| [`src/mcp/resources/config/app.ts`](./src/mcp/resources/config/app.ts) | A static resource URI, `config://app` |
-| [`src/mcp/prompts/summarize.ts`](./src/mcp/prompts/summarize.ts) | An MCP prompt |
-
-## The MCP server
-
-The same app is also a Model Context Protocol server, served at
-`http://localhost:3000/mcp` while `npm run dev` is running. List what it
-exposes:
-
-```bash
-npm run mcp -w clovejs-example-basic
-```
-
-```
-Endpoint  /mcp
-
-tool      createNote               Create a note
-tool      login                    Sign in for the rest of this MCP session (try ada / secret)
-tool      searchNotes              Full-text search across the notes, by title or body
-tool      whoami                   Report who is signed in on this MCP session
-resource  config://app             What this server is and how much is in it
-resource  notes://{id}             A single note, as markdown
-prompt    summarize                Summarize a note in three bullets
-```
-
-Point an MCP client at it:
-
-```json
-{
-  "mcpServers": {
-    "clove-example": { "url": "http://localhost:3000/mcp" }
-  }
-}
-```
-
-The interesting part is that MCP and HTTP share everything underneath. `ctx.notes`
-is one singleton, so a note created with the `createNote` tool shows up
-immediately at `GET /api/notes`. And `ctx.currentUser` is session-scoped, so
-calling `login` gives that MCP connection an identity that `whoami` still sees
-on the next call — the same `di/currentUser.ts` that backs the `clove.sid`
-cookie for browsers.
 
 ## `requests.http` — a Postman collection without Postman
 

@@ -3,7 +3,7 @@ import { z } from "zod"
 
 // Writing to a session-scoped value from a tool is how an MCP server holds
 // state across calls. HTTP middlewares do not run for MCP, so authentication
-// happens here rather than in `middlewares/authenticate.1.ts`.
+// happens here rather than in a middleware.
 //
 // `ctx.auth.login` throws `error(401, ...)` on a bad pair. A 4xx comes back to
 // the model as a readable failure it can act on, so there is nothing to catch.

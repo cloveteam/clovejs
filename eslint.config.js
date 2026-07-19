@@ -11,6 +11,8 @@ export default tseslint.config(
       "node_modules/**",
       "docs/.vitepress/dist/**",
       "docs/.vitepress/cache/**",
+      // Rewritten by codegen on every dev-server start, file change and build.
+      "**/.clove/**",
       // Fixtures are deliberately minimal apps, not library source.
       "test/fixtures/**",
     ],

@@ -1,7 +1,10 @@
 import { ws } from "clovejs"
 
-// Serves /ws/echo. HTTP middlewares do not run for upgrades, so this reads
-// ctx directly rather than relying on the authorize middleware.
+// The simplest possible socket, served at /ws/echo — the file path becomes the
+// URL exactly as it does for HTTP routes.
+//
+// HTTP middlewares do not run for upgrades, so a socket that needs an identity
+// reads `ctx` directly rather than relying on a middleware.
 export default ws(async ({ onMessage, onDestroy, send, ctx }) => {
   ctx.logger.info("socket connected")
   send("connected")

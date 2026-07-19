@@ -1,4 +1,4 @@
-# CloveJS basic example — HTTP requests
+# CloveJS REST example — HTTP requests
 #
 # A dependency-free alternative to a Postman/Insomnia collection: this plain
 # text format is read natively by JetBrains IDEs (Run > HTTP Client) and by
@@ -6,10 +6,9 @@
 # account, no cloud sync. Click "Send Request" above any block, or run them
 # top to bottom.
 #
-# Start the server first: npm run dev -w clovejs-example-basic
+# Start the server first: npm run dev -w clovejs-example-rest
 
 @baseUrl = http://localhost:3000
-@wsUrl = ws://localhost:3000
 
 ### Hello world
 GET {{baseUrl}}/api/hello
@@ -71,14 +70,3 @@ Content-Type: application/json
 
 ### Admin-only route as grace — 403 Forbidden
 GET {{baseUrl}}/api/admin/stats
-
-### WebSocket echo — JetBrains HTTP Client only (WebStorm/IntelliJ 2023.2+).
-### VS Code's REST Client extension has no WebSocket support;
-### use `npx wscat -c ws://localhost:3000/ws/echo`
-### there instead — see src/ws/echo.ts.
-WEBSOCKET {{wsUrl}}/ws/echo
-
-Hello over WebSocket
-===
-wait-for-server
-Sent after the echo comes back

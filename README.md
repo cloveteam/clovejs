@@ -427,17 +427,23 @@ This lets you adopt Clove inside an app you already have — existing Express
 routes keep running unchanged while you migrate to Clove's conventions one
 route at a time.
 
-## Example
+## Examples
 
-A runnable app exercising every convention above — routes, all three DI
-lifetimes, middleware ordering, sessions, WebSockets — lives in
-[`examples/basic`](./examples/basic):
+Three runnable apps live in [`examples/`](./examples), one per surface:
+
+| Example | Covers |
+| --- | --- |
+| [`examples/rest`](./examples/rest) | Routes, route parameters, status-code rules, all three DI lifetimes, middleware ordering, sessions |
+| [`examples/mcp`](./examples/mcp) | An MCP server: tools, resources, prompts, session state across calls |
+| [`examples/websocket`](./examples/websocket) | Sockets, parameterised socket routes, broadcast, an HTTP → socket bridge |
+
+Start with the REST one:
 
 ```bash
 git clone https://github.com/cloveteam/clovejs.git
 cd clovejs
 npm install
-npm run dev -w clovejs-example-basic
+npm run dev -w clovejs-example-rest
 ```
 
 Then, from another terminal:
@@ -449,7 +455,7 @@ curl localhost:3000/api/notes
 # Guarded — 401 until you log in
 curl localhost:3000/api/me
 
-# Log in (ada/secret or grace/secret — see examples/basic/src/services/auth.ts)
+# Log in (ada/secret or grace/secret — see examples/rest/src/services/auth.ts)
 curl -c cookies.txt -X POST localhost:3000/api/login \
   -H 'content-type: application/json' \
   -d '{"username":"ada","password":"secret"}'
@@ -461,10 +467,9 @@ curl -b cookies.txt localhost:3000/api/me
 curl -b cookies.txt localhost:3000/api/admin/stats
 ```
 
-[`examples/basic/README.md`](./examples/basic/README.md) maps each file in the
-example to the concept it demonstrates.
+Each example's `README.md` maps its files to the concepts they demonstrate.
 
-Prefer clicking through requests to typing them? [`examples/basic/requests.http`](./examples/basic/requests.http)
+Prefer clicking through requests to typing them? [`examples/rest/requests.http`](./examples/rest/requests.http)
 covers the same flow, no Postman account required — it's read natively by
 JetBrains IDEs and by VS Code's [REST Client
 extension](https://marketplace.visualstudio.com/items?itemName=humao.rest-client).

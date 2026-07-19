@@ -1,0 +1,45 @@
+# CloveJS WebSocket example — HTTP requests
+#
+# A dependency-free alternative to a Postman/Insomnia collection: this plain
+# text format is read natively by JetBrains IDEs (Run > HTTP Client) and by
+# VS Code's "REST Client" extension (humao.rest-client).
+#
+# The WEBSOCKET blocks at the bottom are JetBrains-only (WebStorm/IntelliJ
+# 2023.2+). VS Code's REST Client extension has no WebSocket support — use
+# `npx wscat -c ws://localhost:3000/ws/echo` there instead.
+#
+# Start the server first: npm run dev -w clovejs-example-websocket
+
+@baseUrl = http://localhost:3000
+@wsUrl = ws://localhost:3000
+
+### Room state over HTTP — empty until someone connects
+GET {{baseUrl}}/api/rooms/lobby
+
+### Push a message into the room from HTTP. Every socket connected to
+### /ws/chat/lobby receives it — open the WEBSOCKET block below first.
+POST {{baseUrl}}/api/rooms/lobby
+Content-Type: application/json
+
+{
+  "from": "ops",
+  "text": "Deploy finished"
+}
+
+### Room state again — the message is in `recent` now
+GET {{baseUrl}}/api/rooms/lobby
+
+### Echo socket — whatever you send comes straight back
+WEBSOCKET {{wsUrl}}/ws/echo
+
+Hello over WebSocket
+===
+wait-for-server
+Sent after the echo comes back
+
+### Chat room — a parameterised socket route. Open this in one tab, then run
+### the POST above, or open it a second time as a different user to watch the
+### two sockets see each other.
+WEBSOCKET {{wsUrl}}/ws/chat/lobby?as=ada
+
+Hello everyone

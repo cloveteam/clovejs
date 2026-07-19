@@ -6,8 +6,7 @@ export default resource({
   description: "What this server is and how much is in it",
   async handler(_params, ctx) {
     return {
-      name: "clovejs-example-basic",
-      url: ctx.config.url,
+      name: ctx.config.appName,
       notes: ctx.notes.list().length,
     }
   },

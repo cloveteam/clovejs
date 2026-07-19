@@ -1,8 +1,8 @@
 {
-  "name": "clovejs-example-basic",
+  "name": "clovejs-example-mcp",
   "private": true,
   "version": "0.0.0",
-  "description": "A runnable CloveJS app covering routes, DI, middlewares, sessions, WebSockets and an MCP server.",
+  "description": "A runnable CloveJS MCP server: tools, resources, prompts, and session-scoped state across calls.",
   "type": "module",
   "scripts": {
     "dev": "clove dev",
@@ -12,7 +12,7 @@
     "mcp": "clove mcp"
   },
   "dependencies": {
-    "clovejs": "*",
+    "clovejs": "file:../..",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.25.76"
   }

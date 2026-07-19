@@ -1,7 +1,7 @@
 import { tool } from "clovejs/mcp"
 import { z } from "zod"
 
-// `ctx.notes` is the same singleton the HTTP routes use, so a note created
+// `ctx.notes` is the same singleton the HTTP route uses, so a note created
 // here shows up at GET /api/notes straight away.
 export default tool({
   description: "Create a note",

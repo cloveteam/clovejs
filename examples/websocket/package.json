@@ -1,0 +1,16 @@
+{
+  "name": "clovejs-example-websocket",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A runnable CloveJS WebSocket app: echo, parameterised socket routes, broadcast via a shared singleton, and an HTTP bridge.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/main.js",
+    "routes": "clove routes"
+  },
+  "dependencies": {
+    "clovejs": "file:../.."
+  }
+}

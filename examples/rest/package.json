@@ -1,0 +1,16 @@
+{
+  "name": "clovejs-example-rest",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A runnable CloveJS REST API covering routes, route parameters, DI lifetimes, middlewares and sessions.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/main.js",
+    "routes": "clove routes"
+  },
+  "dependencies": {
+    "clovejs": "file:../.."
+  }
+}
