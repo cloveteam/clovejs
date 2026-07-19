@@ -4,10 +4,10 @@
 
 # CloveJS
 
-The backend framework that configures itself. CloveJS brings
-Next.js/Nuxt-inspired file-based routing to Node.js — your folder structure
-defines your routes, services, middlewares and injectables, fully typed,
-with zero manual registration.
+The backend framework where MCP is a first-class citizen, along with REST
+and WebSockets. CloveJS brings Next.js/Nuxt-inspired file-based routing
+to Node.js — your folder structure defines your routes, services, middlewares
+and injectables, fully typed, with zero manual registration.
 
 [![CI](https://github.com/cloveteam/clovejs/actions/workflows/ci.yml/badge.svg)](https://github.com/cloveteam/clovejs/actions/workflows/ci.yml)
 <!-- Uncomment once the package is published to npm; until then it renders red.
