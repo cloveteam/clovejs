@@ -54,6 +54,19 @@ tsconfig.json
 .gitignore
 ```
 
+## Teach your editor the conventions
+
+If you code with an AI assistant, do this once now — before it writes its first
+route:
+
+```bash
+npx clove skills
+```
+
+It writes the framework's conventions where Claude Code, Cursor, Antigravity
+and Codex look for them, so your assistant drops files into `api/` instead of
+inventing a router. See [AI editors](/guide/ai-editors).
+
 ## Run it
 
 ```bash
@@ -119,6 +132,7 @@ npm start          # node dist/main.js
 | If you want to… | Read |
 | --- | --- |
 | Understand the directory conventions | [Project structure](/guide/project-structure) |
+| Teach an AI assistant those conventions | [AI editors](/guide/ai-editors) |
 | Map URLs onto files | [Routes](/guide/routes) and [Route parameters](/guide/route-parameters) |
 | Share database clients and config | [Values and lifetimes](/guide/dependency-injection) |
 | Run code around every request | [Middlewares](/guide/middlewares) |

@@ -4,6 +4,14 @@
   "description": "A simple, convention-driven NodeJS HTTP framework with TypeScript and DI in the box.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://cloveteam.github.io/clovejs/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloveteam/clovejs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cloveteam/clovejs/issues"
+  },
   "engines": {
     "node": ">=20"
   },

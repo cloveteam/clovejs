@@ -1,12 +1,37 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/cloveteam/clovejs/main/docs/public/logo.svg" alt="CloveJS" width="96" height="96">
+
 # CloveJS
+
+**Files in, routes out.**
 
 A convention-driven Node.js HTTP framework. Routes, services, middlewares and
 injectables are discovered from the filesystem — there is nothing to register.
 
-- **Simple and customizable.** Files in, routes out.
-- **TypeScript from the box.** `ctx` is fully typed via generated declarations.
-- **DI in the box.** Singleton, session and request lifetime scopes.
-- **Nothing to wire up.** Drop a file in a directory and it is live.
+[![CI](https://github.com/cloveteam/clovejs/actions/workflows/ci.yml/badge.svg)](https://github.com/cloveteam/clovejs/actions/workflows/ci.yml)
+<!-- Uncomment once the package is published to npm; until then it renders red.
+[![npm](https://img.shields.io/npm/v/clovejs?color=3f9d6f)](https://www.npmjs.com/package/clovejs)
+-->
+[![node](https://img.shields.io/badge/node-%3E%3D20-3f9d6f)](https://nodejs.org)
+[![types](https://img.shields.io/badge/types-included-3178c6)](https://cloveteam.github.io/clovejs/guide/typed-context)
+[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE.md)
+
+[Documentation](https://cloveteam.github.io/clovejs/) ·
+[Getting started](https://cloveteam.github.io/clovejs/guide/getting-started) ·
+[CLI](https://cloveteam.github.io/clovejs/reference/cli) ·
+[Contributing](./CONTRIBUTING.md)
+
+</div>
+
+---
+
+- 🗂️ **Nothing to wire up.** Drop a file in a directory and it is live.
+- 🔤 **TypeScript from the box.** `ctx` is fully typed via generated declarations.
+- 🧩 **DI in the box.** Singleton, session and request lifetime scopes.
+- 🔌 **WebSockets included.** Same conventions, `[param]` segments and all.
+- 🤝 **Drops into Express.** Unmatched requests fall through to your own stack.
+- 🤖 **Agent-ready.** `npx clove skills` teaches your AI editor the conventions.
 
 ```bash
 npm i clovejs
@@ -19,21 +44,21 @@ reference and deployment notes. Sources live in [`docs/`](./docs).
 
 ## Contents
 
-- [Project structure](#project-structure)
-- [Routes](#routes)
-- [Route parameters](#route-parameters)
-- [Route metadata](#route-metadata)
-- [Services](#services)
-- [Value dependencies and lifetime scopes](#value-dependencies-and-lifetime-scopes)
-- [Middlewares](#middlewares)
-- [The JSON middleware](#the-json-middleware)
-- [Errors](#errors)
-- [WebSockets](#websockets)
-- [Sessions](#sessions)
-- [Bootstrap and Express interop](#bootstrap-and-express-interop)
-- [CLI](#cli)
-- [AI editor support](#ai-editor-support)
-- [Typed context](#typed-context)
+- 🗂️ [Project structure](#project-structure)
+- 🛣️ [Routes](#routes)
+- 🔖 [Route parameters](#route-parameters)
+- 🏷️ [Route metadata](#route-metadata)
+- 🛠️ [Services](#services)
+- 🧩 [Value dependencies and lifetime scopes](#value-dependencies-and-lifetime-scopes)
+- 🧅 [Middlewares](#middlewares)
+- 📦 [The JSON middleware](#the-json-middleware)
+- 🚨 [Errors](#errors)
+- 🔌 [WebSockets](#websockets)
+- 🍪 [Sessions](#sessions)
+- 🤝 [Bootstrap and Express interop](#bootstrap-and-express-interop)
+- ⌨️ [CLI](#cli)
+- 🤖 [AI editor support](#ai-editor-support)
+- 🔤 [Typed context](#typed-context)
 
 ## Project structure
 

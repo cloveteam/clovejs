@@ -73,4 +73,15 @@ export default get(async (req, res, ctx) => {
 `GET /api/v1/users/1` now returns JSON. No router file was edited, and `ctx.users`
 is typed because a file exists at `src/services/users.ts`.
 
+## Bring your assistant along
+
+```bash
+npx clove skills
+```
+
+Writes the conventions on this page into `.claude/`, `.cursor/`,
+`.antigravity/` and `AGENTS.md`, so your coding agent drops a file into `api/`
+instead of scaffolding a router you do not need. See [AI
+editors](/guide/ai-editors).
+
 Ready for the details? Start with [Getting started](/guide/getting-started).

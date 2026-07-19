@@ -46,6 +46,7 @@ export default defineConfig({
             { text: "What is CloveJS?", link: "/guide/what-is-clovejs" },
             { text: "Getting started", link: "/guide/getting-started" },
             { text: "Project structure", link: "/guide/project-structure" },
+            { text: "AI editors", link: "/guide/ai-editors" },
           ],
         },
         {

@@ -102,7 +102,8 @@ boots the app with logging silenced, so convention violations still surface as
 
 Teaches AI coding assistants the framework's conventions, so they stop
 inventing route registries and reach for `ctx` instead of importing providers
-directly.
+directly. The [AI editors](/guide/ai-editors) guide covers the reasoning; this
+is the flag reference.
 
 ```bash
 npx clove skills
