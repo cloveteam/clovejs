@@ -1,0 +1,29 @@
+# package.json "files" is the source of truth for what gets published
+# (dist, templates, README.md). This is a belt-and-suspenders backstop in
+# case that allowlist is ever narrowed or removed.
+
+# Sources and tooling
+src/
+test/
+docs/
+.github/
+
+# Config
+.editorconfig
+eslint.config.js
+tsconfig.json
+tsup.config.ts
+vitest.config.ts
+
+# Project docs not meant for the published package
+CONTRIBUTING.md
+CONTRIBUTORS.md
+ADOPTERS.md
+
+# Housekeeping
+node_modules/
+coverage/
+*.log
+.DS_Store
+.env
+.env.local
