@@ -18,7 +18,15 @@ export type Lifetime = "singleton" | "session" | "request"
 
 export const KIND = Symbol.for("clovejs.kind")
 
-export type DefinitionKind = "route" | "middleware" | "service" | "di" | "ws"
+export type DefinitionKind =
+  | "route"
+  | "middleware"
+  | "service"
+  | "di"
+  | "ws"
+  | "mcpTool"
+  | "mcpResource"
+  | "mcpPrompt"
 
 export interface Definition<K extends DefinitionKind> {
   readonly [KIND]: K
@@ -139,6 +147,11 @@ export type AnyDefinition =
   | ServiceDefinition
   | DiDefinition
   | WsDefinition
+  // MCP definitions are structurally identified the same way, but their shapes
+  // live in `src/mcp/` so the core never has to import the MCP SDK.
+  | Definition<"mcpTool">
+  | Definition<"mcpResource">
+  | Definition<"mcpPrompt">
 
 export function isDefinition(value: unknown): value is AnyDefinition {
   return (

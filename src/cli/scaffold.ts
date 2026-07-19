@@ -39,7 +39,20 @@ export async function scaffold(options: ScaffoldOptions): Promise<ScaffoldResult
     created.push(path)
   }
 
-  for (const dir of ["api", "ws", "di", "services", "middlewares"]) {
+  // The directories are created empty rather than seeded with examples, so
+  // the shape of a project is visible before anything is written. `mcp/` is
+  // included but left out of the example files: its SDK is an optional peer
+  // dependency, and an empty directory costs a project nothing.
+  for (const dir of [
+    "api",
+    "ws",
+    "di",
+    "services",
+    "middlewares",
+    "mcp/tools",
+    "mcp/resources",
+    "mcp/prompts",
+  ]) {
     await mkdir(join(base, dir), { recursive: true })
   }
 

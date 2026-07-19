@@ -9,13 +9,14 @@ export const SKILL_NAME = "clovejs"
 
 export const SKILL_DESCRIPTION =
   "Conventions for writing CloveJS code — file-based routes, services, DI " +
-  "lifetimes, middlewares, WebSockets and the CLI. Use whenever editing a " +
+  "lifetimes, middlewares, WebSockets, MCP servers and the CLI. Use whenever editing a " +
   "project that depends on the `clovejs` package."
 
 /** Globs that mark a file as CloveJS-shaped, for editors that scope by path. */
 export const SKILL_GLOBS = [
   "**/api/**",
   "**/ws/**",
+  "**/mcp/**",
   "**/di/**",
   "**/services/**",
   "**/middlewares/**",
@@ -39,6 +40,8 @@ match whichever the project already uses.
 src/
   api/          route handlers      -> HTTP endpoints
   ws/           socket handlers     -> WebSocket endpoints
+  mcp/          tools, resources,
+                prompts             -> MCP server at /mcp
   di/           injectable values
   services/     injectable services
   middlewares/  request middlewares
@@ -217,6 +220,71 @@ Each connection gets its own request-scoped container, disposed when the socket
 closes. **HTTP middlewares do not run for upgrades** — authenticate inside the
 handler using \`ctx\`.
 
+## MCP servers
+
+Files in \`mcp/\` expose the project as a Model Context Protocol server. The
+SDK and zod are **optional peer dependencies** — install
+\`@modelcontextprotocol/sdk\` and \`zod\` before adding the first file.
+
+Import the definitions from \`clovejs/mcp\`, not \`clovejs\`.
+
+\`mcp/tools/searchNotes.ts\` becomes the tool \`searchNotes\`:
+
+\`\`\`ts
+import { tool } from "clovejs/mcp"
+import { z } from "zod"
+
+export default tool({
+  description: "Full-text search across the user's notes",
+  input: z.object({ query: z.string(), limit: z.number().default(10) }),
+  async handler({ query, limit }, ctx) {
+    return ctx.notes.search(query, { limit })
+  },
+}).meta({ readOnly: true })
+\`\`\`
+
+\`input\` is published as JSON Schema, validated before the handler runs, and
+types the handler's first argument — do not annotate it by hand. Write
+\`description\` for the model: it is what decides whether the tool gets called.
+
+Resources are read by URI, derived from the file path — the first segment is
+the scheme, \`[param]\` becomes \`{param}\`. \`mcp/resources/notes/[id].ts\`
+serves \`notes://{id}\`:
+
+\`\`\`ts
+import { resource, error } from "clovejs/mcp"
+
+export default resource({
+  description: "A single note by id",
+  mimeType: "text/markdown",
+  async handler({ id }, ctx) {
+    const note = await ctx.notes.findById(id)
+    if (!note) throw error(404, { message: "No such note" })
+    return note.markdown
+  },
+})
+\`\`\`
+
+\`mcp/prompts/\` holds prompt templates; their arguments must be
+\`z.string()\`, since MCP transports them as strings.
+
+Rules that differ from routes:
+
+- Tool and prompt names flatten in camelCase like \`ctx\` keys
+  (\`mcp/tools/notes/search.ts\` -> \`notesSearch\`).
+- Return values are serialised like the JSON middleware does; return content
+  blocks directly only when you need images or multiple blocks.
+- **HTTP middlewares do not run for MCP calls** — authenticate inside the
+  handler using \`ctx\`, as with WebSockets.
+- \`session\`-scoped values are scoped to one MCP session; \`request\`-scoped
+  ones to a single call.
+- A 4xx from \`error()\` is returned to the model as a readable failure it can
+  act on. Anything else is logged and reported as an internal error, so do not
+  rely on a 500's message reaching the client.
+
+Run \`npx clove mcp\` to print the resolved tools, resources and prompts, or
+\`npx clove mcp --stdio\` to serve the project over stdio.
+
 ## Sessions
 
 Declaring any \`session\`-scoped value turns sessions on. Visitors are
@@ -258,6 +326,7 @@ Requests matching no Clove route fall through to the host's own stack.
 | \`clove types\` | Regenerate \`.clove/types.d.ts\` only |
 | \`clove scaffold\` | Create the default structure (\`--js\` for JavaScript) |
 | \`clove routes\` | Print the resolved route table |
+| \`clove mcp\` | Print the MCP surface (\`--stdio\` to serve over stdio) |
 | \`clove skills\` | Install these instructions for AI editors |
 
 Every command takes \`--dir <path>\` to target another project root.
@@ -278,5 +347,6 @@ generation is a path-level scan, so it never executes project code.
 - Reach dependencies through \`ctx\`, never by importing another provider
   module directly.
 - Run \`npx clove routes\` to confirm a filename produced the URL you expected,
-  and \`npx clove types\` after touching \`services/\` or \`di/\`.
+  \`npx clove mcp\` for tool names and resource URIs, and \`npx clove types\`
+  after touching \`services/\` or \`di/\`.
 `.trim()

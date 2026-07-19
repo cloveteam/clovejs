@@ -1,7 +1,8 @@
 # Definitions
 
 The functions that mark a module's default export as something the scanner
-should pick up. All are exported from `clovejs`.
+should pick up. All are exported from `clovejs`, except the MCP definitions,
+which come from `clovejs/mcp`.
 
 ## Route wrappers
 
@@ -84,6 +85,45 @@ ws(handler: (args: WsArgs) => void | Promise<void>): WsDefinition
 
 A WebSocket endpoint. The handler runs once per connection; see
 [WebSockets](/guide/websockets) for the fields on `args`.
+
+## `tool(spec)`
+
+```ts
+import { tool } from "clovejs/mcp"
+
+tool(spec: McpToolSpec): McpToolDefinition
+```
+
+An [MCP](/guide/mcp) tool — an action a model can invoke. `spec` takes
+`description` (required), and optionally `name`, `title` and `input`. The
+returned definition has a chainable `.meta()`, as route definitions do.
+
+`input` accepts `z.object({...})` or the bare `{ a: z.string() }` shape it
+wraps, and types the handler's first argument from it.
+
+## `resource(spec)`
+
+```ts
+import { resource } from "clovejs/mcp"
+
+resource(spec: McpResourceSpec): McpResourceDefinition
+```
+
+An MCP resource — data a client reads by URI. `spec` takes `description`
+(required), and optionally `uri`, `name`, `title` and `mimeType`. Without an
+explicit `uri`, one is [derived from the file path](/guide/mcp#resources).
+
+## `prompt(spec)`
+
+```ts
+import { prompt } from "clovejs/mcp"
+
+prompt(spec: McpPromptSpec): McpPromptDefinition
+```
+
+An MCP prompt — a template the user picks explicitly. Same fields as `tool()`
+minus the annotations. Prompt arguments must be `z.string()`; anything else is
+a boot error.
 
 ## `error(status, body?)`
 

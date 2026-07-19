@@ -16,6 +16,7 @@ clove — CloveJS project commands
   clove types                           Generate .clove/types.d.ts only
   clove scaffold [--js] [--force]       Create the default project structure
   clove routes                          Print the resolved route table
+  clove mcp [--stdio]                   Print the MCP surface, or serve it over stdio
   clove skills [--ide <a,b>] [--force]  Install CloveJS instructions for AI editors
 
 Options:
@@ -152,6 +153,58 @@ async function main(): Promise<void> {
       }
       for (const path of app.scan.socketHandlers.keys()) {
         console.log(`${"WS".padEnd(7)} ${path}`)
+      }
+      if (!app.mcp.empty) {
+        console.log(`${"MCP".padEnd(7)} ${app.mcp.path}`)
+      }
+      await app.close()
+      return
+    }
+
+    case "mcp": {
+      const { createApp } = await import("../app.js")
+
+      if (flags.stdio) {
+        // stdout *is* the protocol stream here, and console.log/info/debug all
+        // write to it. Redirect them to stderr before anything boots, so a
+        // stray log line in project code cannot corrupt the transport.
+        console.log = console.error
+        console.info = console.error
+        console.debug = console.error
+
+        const app = await createApp({ rootDir, logLevel: "info" })
+        if (app.mcp.empty) {
+          console.error(`No MCP definitions found under ${sourceDir}/mcp/.`)
+          await app.close()
+          process.exitCode = 1
+          return
+        }
+        const shutdown = () => {
+          void app.close().then(() => process.exit(0))
+        }
+        process.on("SIGINT", shutdown)
+        process.on("SIGTERM", shutdown)
+        await app.mcp.serveStdio()
+        await app.close()
+        return
+      }
+
+      const app = await createApp({ rootDir, logLevel: "silent" })
+      const { tools, resources, prompts } = app.scan.mcp
+
+      if (app.mcp.empty) {
+        console.log(`No MCP definitions found under ${sourceDir}/mcp/.`)
+      } else {
+        console.log(`Endpoint  ${app.mcp.path}\n`)
+        for (const tool of tools) {
+          console.log(`${"tool".padEnd(9)} ${tool.name.padEnd(24)} ${tool.description}`)
+        }
+        for (const res of resources) {
+          console.log(`${"resource".padEnd(9)} ${res.uri.padEnd(24)} ${res.description}`)
+        }
+        for (const p of prompts) {
+          console.log(`${"prompt".padEnd(9)} ${p.name.padEnd(24)} ${p.description}`)
+        }
       }
       await app.close()
       return

@@ -637,6 +637,457 @@ var CloveResponse = class {
   }
 };
 
+// src/mcp/runtime.ts
+var import_node_crypto2 = require("crypto");
+
+// src/mcp/content.ts
+function toToolContent(result) {
+  if (result === void 0 || result === null) return [];
+  if (typeof result === "string") return [{ type: "text", text: result }];
+  if (isContentBlock(result)) return [result];
+  if (Array.isArray(result) && result.length > 0 && result.every(isContentBlock)) {
+    return result;
+  }
+  return [{ type: "text", text: stringify(result) }];
+}
+function toResourceContents(result, uri, declaredMimeType) {
+  if (result === void 0 || result === null) return [];
+  const binary = asBinary(result);
+  if (binary) {
+    return [
+      {
+        uri,
+        mimeType: declaredMimeType ?? "application/octet-stream",
+        blob: binary.toString("base64")
+      }
+    ];
+  }
+  if (typeof result === "string") {
+    return [{ uri, ...declaredMimeType ? { mimeType: declaredMimeType } : {}, text: result }];
+  }
+  if (typeof result === "object" && Array.isArray(result.contents)) {
+    return result.contents.map(
+      (entry) => ({ uri, ...entry })
+    );
+  }
+  return [
+    {
+      uri,
+      mimeType: declaredMimeType ?? "application/json",
+      text: stringify(result)
+    }
+  ];
+}
+function toPromptMessages(result) {
+  if (result === void 0 || result === null) return [];
+  if (typeof result === "string") {
+    return [{ role: "user", content: { type: "text", text: result } }];
+  }
+  const list = Array.isArray(result) ? result : [result];
+  const messages = [];
+  for (const entry of list) {
+    if (typeof entry === "string") {
+      messages.push({ role: "user", content: { type: "text", text: entry } });
+      continue;
+    }
+    if (!isPromptMessage(entry)) {
+      messages.push({ role: "user", content: { type: "text", text: stringify(entry) } });
+      continue;
+    }
+    for (const content of toToolContent(entry.content)) {
+      messages.push({ role: entry.role, content });
+    }
+  }
+  return messages;
+}
+function isRecoverable(err) {
+  return isHttpError(err) && err.status >= 400 && err.status < 500;
+}
+function errorText(err) {
+  if (isHttpError(err)) {
+    const body = err.body;
+    if (typeof body === "string") return body;
+    if (body && typeof body === "object" && "message" in body) {
+      return String(body.message);
+    }
+    return err.message;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+function isContentBlock(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const type = value.type;
+  return type === "text" && typeof value.text === "string" || type === "image" && typeof value.data === "string";
+}
+function isPromptMessage(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const role = value.role;
+  return (role === "user" || role === "assistant") && "content" in value;
+}
+function asBinary(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  return null;
+}
+function stringify(value) {
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// src/scanner/walk.ts
+var import_promises = require("fs/promises");
+var import_node_path = require("path");
+var SOURCE_EXTENSIONS = [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"];
+var IGNORED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", ".clove", "dist", "build"]);
+async function walkDir(root) {
+  const out = [];
+  async function visit(dir) {
+    let entries;
+    try {
+      entries = await (0, import_promises.readdir)(dir, { withFileTypes: true });
+    } catch (err) {
+      if (err.code === "ENOENT") return;
+      throw err;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const full = (0, import_node_path.join)(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (IGNORED_DIRS.has(entry.name)) continue;
+        await visit(full);
+      } else if (entry.isFile() && isSourceFile(entry.name)) {
+        out.push({ absolute: full, relative: (0, import_node_path.relative)(root, full).split(import_node_path.sep).join("/") });
+      }
+    }
+  }
+  await visit(root);
+  return out.sort((a, b) => a.relative.localeCompare(b.relative));
+}
+function isSourceFile(name) {
+  if (name.endsWith(".d.ts")) return false;
+  if (/\.(test|spec)\.[cm]?[jt]s$/.test(name)) return false;
+  return SOURCE_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+function stripExtension(path) {
+  for (const ext of SOURCE_EXTENSIONS) {
+    if (path.endsWith(ext)) return path.slice(0, -ext.length);
+  }
+  return path;
+}
+
+// src/mcp/paths.ts
+function deriveMcpName(relativePath) {
+  const segments = stripExtension(relativePath).split("/").filter(Boolean);
+  if (segments[segments.length - 1] === "index" && segments.length > 1) segments.pop();
+  return segments.map((s, i) => i === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1)).join("");
+}
+function deriveResourceUri(relativePath) {
+  const segments = stripExtension(relativePath).split("/").filter(Boolean);
+  if (segments[segments.length - 1] === "index" && segments.length > 1) segments.pop();
+  const [scheme, ...rest] = segments;
+  if (!scheme) return "";
+  return `${templateSegment(scheme)}://${rest.map(templateSegment).join("/")}`;
+}
+function templateSegment(segment) {
+  const match = /^\[\.{0,3}(.+)\]$/.exec(segment);
+  return match ? `{${match[1]}}` : segment;
+}
+function isUriTemplate(uri) {
+  return uri.includes("{");
+}
+
+// src/mcp/runtime.ts
+var MCP_SESSION_HEADER = "mcp-session-id";
+var McpRuntime = class {
+  path;
+  #options;
+  #sdk = null;
+  #live = /* @__PURE__ */ new Map();
+  /** The single connection used by stdio, which has no session ids. */
+  #standalone = null;
+  constructor(options2) {
+    this.#options = { exposeErrors: false, ...options2 };
+    this.path = options2.path ?? "/mcp";
+  }
+  get empty() {
+    const { tools, resources, prompts } = this.#options.scan;
+    return tools.length === 0 && resources.length === 0 && prompts.length === 0;
+  }
+  get counts() {
+    const { tools, resources, prompts } = this.#options.scan;
+    return { tools: tools.length, resources: resources.length, prompts: prompts.length };
+  }
+  /**
+   * Handles one MCP HTTP request. Returns false when the path does not match,
+   * so the caller can fall through to routes.
+   */
+  async handle(req, res, body) {
+    if (this.empty) return false;
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    if (url.pathname !== this.path) return false;
+    const sdk = await this.#load();
+    const existingId = headerValue(req, MCP_SESSION_HEADER);
+    if (existingId) {
+      const live2 = this.#live.get(existingId);
+      if (!live2) {
+        writeJsonRpcError(res, 404, -32001, "Unknown or expired MCP session");
+        return true;
+      }
+      await live2.ready;
+      await live2.transport.handleRequest(req, res, body);
+      await this.#persist(live2);
+      return true;
+    }
+    if (req.method !== "POST") {
+      writeJsonRpcError(res, 400, -32e3, "Missing Mcp-Session-Id header");
+      return true;
+    }
+    const transport = new sdk.StreamableHTTPServerTransport({
+      sessionIdGenerator: () => (0, import_node_crypto2.randomUUID)(),
+      onsessioninitialized: (sessionId) => {
+        this.#live.set(sessionId, live);
+        this.#options.logger.debug(`MCP session opened: ${sessionId}`);
+        live.ready = (async () => {
+          if (!this.#options.sessions.needed) return;
+          const { container } = await this.#options.sessions.acquireById(sessionId);
+          live.parent = container;
+          live.sessionId = sessionId;
+        })();
+        return live.ready;
+      },
+      onsessionclosed: (sessionId) => {
+        void this.#closeSession(sessionId);
+      }
+    });
+    const live = {
+      server: this.#buildServer(sdk, () => live.parent),
+      transport,
+      parent: this.#options.root,
+      sessionId: null,
+      ready: Promise.resolve()
+    };
+    transport.onclose = () => {
+      const id = transport.sessionId;
+      if (id) void this.#closeSession(id);
+    };
+    await live.server.connect(transport);
+    await transport.handleRequest(req, res, body);
+    await live.ready;
+    await this.#persist(live);
+    return true;
+  }
+  /**
+   * Serves the project over stdio, for clients that launch the server as a
+   * subprocess. Resolves when the client disconnects.
+   */
+  async serveStdio() {
+    const sdk = await this.#load();
+    const transport = new sdk.StdioServerTransport();
+    const live = {
+      server: this.#buildServer(sdk, () => this.#options.root),
+      transport,
+      parent: this.#options.root,
+      sessionId: null,
+      ready: Promise.resolve()
+    };
+    this.#standalone = live;
+    await live.server.connect(transport);
+    await new Promise((resolve) => {
+      transport.onclose = () => resolve();
+    });
+  }
+  /** Builds an MCP server with every scanned tool, resource and prompt bound. */
+  #buildServer(sdk, parent) {
+    const { scan, serverInfo } = this.#options;
+    const server = new sdk.McpServer(
+      serverInfo ?? { name: "clovejs", version: "0.1.1" },
+      { capabilities: { logging: {} } }
+    );
+    for (const tool of scan.tools) {
+      const shape = tool.shape;
+      const run = (input, extra) => this.#call(parent(), tool.file, extra, async (ctx, args) => ({
+        content: toToolContent(await tool.handler(input ?? {}, ctx, args))
+      }), true);
+      server.registerTool(
+        tool.name,
+        {
+          description: tool.description,
+          ...tool.title ? { title: tool.title } : {},
+          ...shape ? { inputSchema: shape } : {},
+          ...annotationsOf(tool.meta)
+        },
+        // A tool without an input schema takes no arguments, so the SDK calls
+        // back with `(extra)` alone rather than `(input, extra)`.
+        shape ? (input, extra) => run(input, extra) : (extra) => run({}, extra)
+      );
+    }
+    for (const res of scan.resources) {
+      const target = isUriTemplate(res.uri) ? new sdk.ResourceTemplate(res.uri, { list: void 0 }) : res.uri;
+      server.registerResource(
+        res.name,
+        target,
+        {
+          description: res.description,
+          ...res.title ? { title: res.title } : {},
+          ...res.mimeType ? { mimeType: res.mimeType } : {}
+        },
+        async (uri, a, b) => {
+          const variables = isUriTemplate(res.uri) ? a : {};
+          const extra = isUriTemplate(res.uri) ? b : a;
+          return this.#call(parent(), res.file, extra, async (ctx, args) => ({
+            contents: toResourceContents(
+              await res.handler(stringParams(variables), ctx, { ...args, uri: uri.href }),
+              uri.href,
+              res.mimeType
+            )
+          }));
+        }
+      );
+    }
+    for (const p of scan.prompts) {
+      const shape = p.shape;
+      const run = (input, extra) => this.#call(parent(), p.file, extra, async (ctx, args) => ({
+        messages: toPromptMessages(await p.handler(input ?? {}, ctx, args))
+      }));
+      server.registerPrompt(
+        p.name,
+        {
+          description: p.description,
+          ...p.title ? { title: p.title } : {},
+          ...shape ? { argsSchema: shape } : {}
+        },
+        // As with tools, an argument-less prompt is called with `(extra)` only.
+        shape ? (input, extra) => run(input, extra) : (extra) => run({}, extra)
+      );
+    }
+    return server;
+  }
+  /**
+   * Runs one handler in a fresh request-scoped container.
+   *
+   * A client error (4xx) is the model's problem — bad arguments, a missing
+   * record — so its message is passed through verbatim for the model to act
+   * on. Anything else is ours: it is logged in full and reported as a generic
+   * failure, so internal detail does not reach the client. That mirrors what
+   * the HTTP pipeline does with a 500, `exposeErrors` and all.
+   *
+   * Only tools can carry a failure in their result. Resources and prompts have
+   * no such field in the protocol, so for those the error is rethrown and the
+   * SDK turns it into a JSON-RPC error.
+   */
+  async #call(parent, file, extra, run, soft = false) {
+    const container = parent.createChild("request");
+    const args = {
+      ctx: container.ctx,
+      sessionId: typeof extra?.sessionId === "string" ? extra.sessionId : null,
+      signal: extra?.signal ?? new AbortController().signal,
+      log: (level, message) => {
+        void extra?.sendNotification?.({
+          method: "notifications/message",
+          params: { level, data: message }
+        });
+      }
+    };
+    try {
+      return await run(container.ctx, args);
+    } catch (err) {
+      const message = isRecoverable(err) ? errorText(err) : this.#reportInternal(err, file);
+      if (soft) return { content: [{ type: "text", text: message }], isError: true };
+      throw new Error(message, { cause: err });
+    } finally {
+      await container.dispose().catch((err) => this.#options.logger.error("Error disposing MCP request scope:", err));
+    }
+  }
+  /** Logs an unexpected failure and returns the message the client may see. */
+  #reportInternal(err, file) {
+    this.#options.logger.error(`MCP handler failed (${file}):`, err);
+    return this.#options.exposeErrors && err instanceof Error ? `Internal error: ${err.message}` : "Internal error";
+  }
+  async #persist(live) {
+    if (!live.sessionId) return;
+    await this.#options.sessions.persist(live.sessionId, live.parent).catch((err) => this.#options.logger.error("Failed to persist MCP session:", err));
+  }
+  async #closeSession(sessionId) {
+    const live = this.#live.get(sessionId);
+    if (!live) return;
+    this.#live.delete(sessionId);
+    this.#options.logger.debug(`MCP session closed: ${sessionId}`);
+    await live.server.close().catch(() => void 0);
+    if (live.sessionId) {
+      await this.#options.sessions.destroy(live.sessionId).catch(() => void 0);
+    }
+  }
+  /** Closes every open connection. */
+  async close() {
+    const ids = [...this.#live.keys()];
+    await Promise.all(ids.map((id) => this.#closeSession(id)));
+    if (this.#standalone) {
+      await this.#standalone.server.close().catch(() => void 0);
+      this.#standalone = null;
+    }
+  }
+  /**
+   * Imports the MCP SDK on first use.
+   *
+   * It is an optional peer dependency: a project with no `mcp/` directory
+   * never loads it, and never has to install it.
+   */
+  async #load() {
+    if (this.#sdk) return this.#sdk;
+    try {
+      const [mcp, http, stdio] = await Promise.all([
+        import("@modelcontextprotocol/sdk/server/mcp.js"),
+        import("@modelcontextprotocol/sdk/server/streamableHttp.js"),
+        import("@modelcontextprotocol/sdk/server/stdio.js")
+      ]);
+      this.#sdk = {
+        McpServer: mcp.McpServer,
+        ResourceTemplate: mcp.ResourceTemplate,
+        StreamableHTTPServerTransport: http.StreamableHTTPServerTransport,
+        StdioServerTransport: stdio.StdioServerTransport
+      };
+      return this.#sdk;
+    } catch (err) {
+      throw new CloveBootError(
+        `This project has an mcp/ directory, which needs the MCP SDK and zod:
+
+  npm install @modelcontextprotocol/sdk zod
+
+They are optional peer dependencies, so projects without MCP tools do not carry them.
+
+Underlying error: ${err.message}`
+      );
+    }
+  }
+};
+function annotationsOf(meta) {
+  const annotations = {};
+  if (typeof meta.readOnly === "boolean") annotations.readOnlyHint = meta.readOnly;
+  if (typeof meta.destructive === "boolean") annotations.destructiveHint = meta.destructive;
+  if (typeof meta.idempotent === "boolean") annotations.idempotentHint = meta.idempotent;
+  if (typeof meta.openWorld === "boolean") annotations.openWorldHint = meta.openWorld;
+  return Object.keys(annotations).length ? { annotations } : {};
+}
+function stringParams(variables) {
+  const out = {};
+  for (const [key, value] of Object.entries(variables ?? {})) {
+    out[key] = Array.isArray(value) ? value.join("/") : String(value);
+  }
+  return out;
+}
+function headerValue(req, name) {
+  const raw = req.headers[name];
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+function writeJsonRpcError(res, status, code, message) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+}
+
 // src/pipeline/json.ts
 function jsonEnabled(route2, res) {
   if (route2.meta.json === false) return false;
@@ -758,6 +1209,55 @@ var Registry = class {
     return this.all().filter((p) => p.lifetime === lifetime);
   }
 };
+
+// src/mcp/schema.ts
+function toRawShape(input, file) {
+  if (input === null) return void 0;
+  if (typeof input !== "object") {
+    throw new CloveBootError(
+      `\`input\` must be a zod schema or an object of zod schemas, but it is ${typeof input}.`,
+      [file]
+    );
+  }
+  const shape = input.shape;
+  if (shape && typeof shape === "object") {
+    return shape;
+  }
+  if (typeof input.parse === "function") {
+    throw new CloveBootError(
+      `\`input\` must be an object schema. Wrap the fields in z.object({...}) \u2014 a bare z.string() or z.array() cannot describe named tool arguments.`,
+      [file]
+    );
+  }
+  const entries = Object.entries(input);
+  if (entries.length === 0) return void 0;
+  for (const [key, value] of entries) {
+    if (!value || typeof value.parse !== "function") {
+      throw new CloveBootError(
+        `\`input.${key}\` is not a zod schema. Every field of a bare input object must be one, for example \`{ ${key}: z.string() }\`.`,
+        [file]
+      );
+    }
+  }
+  return input;
+}
+function assertPromptShape(shape, file) {
+  if (!shape) return void 0;
+  for (const [key, value] of Object.entries(shape)) {
+    const typeName = zodTypeName(value);
+    if (typeName && typeName !== "ZodString" && typeName !== "ZodOptional") {
+      throw new CloveBootError(
+        `Prompt argument "${key}" is a ${typeName}, but MCP transports prompt arguments as strings. Use z.string() and parse inside the handler.`,
+        [file]
+      );
+    }
+  }
+  return shape;
+}
+function zodTypeName(schema) {
+  const def = schema?._def;
+  return typeof def?.typeName === "string" ? def.typeName : null;
+}
 
 // src/router/trie.ts
 function createNode() {
@@ -954,47 +1454,6 @@ async function loadDefault(loader, absolutePath) {
   return value;
 }
 
-// src/scanner/walk.ts
-var import_promises = require("fs/promises");
-var import_node_path = require("path");
-var SOURCE_EXTENSIONS = [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"];
-var IGNORED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", ".clove", "dist", "build"]);
-async function walkDir(root) {
-  const out = [];
-  async function visit(dir) {
-    let entries;
-    try {
-      entries = await (0, import_promises.readdir)(dir, { withFileTypes: true });
-    } catch (err) {
-      if (err.code === "ENOENT") return;
-      throw err;
-    }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) continue;
-      const full = (0, import_node_path.join)(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-        await visit(full);
-      } else if (entry.isFile() && isSourceFile(entry.name)) {
-        out.push({ absolute: full, relative: (0, import_node_path.relative)(root, full).split(import_node_path.sep).join("/") });
-      }
-    }
-  }
-  await visit(root);
-  return out.sort((a, b) => a.relative.localeCompare(b.relative));
-}
-function isSourceFile(name) {
-  if (name.endsWith(".d.ts")) return false;
-  if (/\.(test|spec)\.[cm]?[jt]s$/.test(name)) return false;
-  return SOURCE_EXTENSIONS.some((ext) => name.endsWith(ext));
-}
-function stripExtension(path) {
-  for (const ext of SOURCE_EXTENSIONS) {
-    if (path.endsWith(ext)) return path.slice(0, -ext.length);
-  }
-  return path;
-}
-
 // src/scanner/paths.ts
 var METHODS = /* @__PURE__ */ new Set([
   "get",
@@ -1089,7 +1548,13 @@ var DEFAULT_DIRS = {
   ws: "ws",
   di: "di",
   services: "services",
-  middlewares: "middlewares"
+  middlewares: "middlewares",
+  mcp: "mcp"
+};
+var MCP_KINDS = {
+  tools: "mcpTool",
+  resources: "mcpResource",
+  prompts: "mcpPrompt"
 };
 async function scanProject(options2) {
   const { sourceDir, loader } = options2;
@@ -1199,6 +1664,67 @@ async function scanProject(options2) {
     });
     socketHandlers.set(path, socket);
   }
+  const mcp = { tools: [], resources: [], prompts: [] };
+  const mcpNames = /* @__PURE__ */ new Map();
+  for (const [sub, expected] of Object.entries(MCP_KINDS)) {
+    const dir = (0, import_node_path2.join)(sourceDir, dirs.mcp, sub);
+    for (const file of await walkDir(dir)) {
+      files.push(file.absolute);
+      const def = await loadDefault(loader, file.absolute);
+      const actual = definitionKind(def);
+      if (actual !== expected) {
+        const wrapper = expected.replace("mcp", "").toLowerCase();
+        throw new CloveBootError(
+          `Files in ${dirs.mcp}/${sub}/ must default-export ${wrapper}(...), but this one exports ${describe(actual)}.`,
+          [file.absolute]
+        );
+      }
+      if (sub === "resources") {
+        const d = def;
+        const uri = d.uri ?? deriveResourceUri(file.relative);
+        const name2 = d.name ?? deriveMcpName(file.relative);
+        claim(mcpNames, `resource:${uri}`, file.absolute, `resource URI "${uri}"`);
+        mcp.resources.push({
+          uri,
+          name: name2,
+          description: d.description,
+          title: d.title,
+          mimeType: d.mimeType,
+          handler: d.handler,
+          file: file.absolute
+        });
+        continue;
+      }
+      const name = def.name ?? deriveMcpName(file.relative);
+      claim(mcpNames, `${sub}:${name}`, file.absolute, `${singular(sub)} name "${name}"`);
+      if (sub === "tools") {
+        const d = def;
+        mcp.tools.push({
+          name,
+          description: d.description,
+          title: d.title,
+          input: d.input,
+          // Normalised here rather than on first request, so a malformed
+          // schema is a boot error naming the file, like every other one.
+          shape: toRawShape(d.input, file.absolute),
+          handler: d.handler,
+          meta: Object.freeze({ ...d[META] }),
+          file: file.absolute
+        });
+      } else {
+        const d = def;
+        mcp.prompts.push({
+          name,
+          description: d.description,
+          title: d.title,
+          input: d.input,
+          shape: assertPromptShape(toRawShape(d.input, file.absolute), file.absolute),
+          handler: d.handler,
+          file: file.absolute
+        });
+      }
+    }
+  }
   const mwDir = (0, import_node_path2.join)(sourceDir, dirs.middlewares);
   for (const file of await walkDir(mwDir)) {
     files.push(file.absolute);
@@ -1217,11 +1743,24 @@ async function scanProject(options2) {
     });
   }
   middlewares.sort(comparePriority);
-  return { routes, middlewares, sockets, socketHandlers, registry, files };
+  return { routes, middlewares, sockets, socketHandlers, mcp, registry, files };
 }
 function describe(kind) {
   if (kind === null) return "a plain value (not an CloveJS definition)";
   return `${kind}(...)`;
+}
+function claim(taken, key, file, label) {
+  const previous = taken.get(key);
+  if (previous) {
+    throw new CloveBootError(
+      `Duplicate ${label}: two files both claim it. Rename one of them, or set an explicit name in the definition.`,
+      [previous, file]
+    );
+  }
+  taken.set(key, file);
+}
+function singular(sub) {
+  return sub.endsWith("s") ? sub.slice(0, -1) : sub;
 }
 function resolveSourceDir(rootDir) {
   const src = (0, import_node_path2.join)(rootDir, "src");
@@ -1230,7 +1769,7 @@ function resolveSourceDir(rootDir) {
 }
 
 // src/session/index.ts
-var import_node_crypto2 = require("crypto");
+var import_node_crypto3 = require("crypto");
 
 // src/session/store.ts
 var MemorySessionStore = class {
@@ -1339,12 +1878,37 @@ var SessionManager = class {
         return { container: container2, id: existingId, isNew: false };
       }
     }
-    const id = (0, import_node_crypto2.randomBytes)(24).toString("base64url");
+    const id = (0, import_node_crypto3.randomBytes)(24).toString("base64url");
     const container = this.#root.createChild("session");
     this.#containers.set(id, container);
     await this.store.set(id, {});
     res.cookie(this.cookieName, sign(id, this.#secret), this.#cookieOptions);
     return { container, id, isNew: true };
+  }
+  /**
+   * Resolves the session container for an id supplied by the caller, rather
+   * than read from a cookie.
+   *
+   * Transports that carry their own session identity use this — MCP, for
+   * instance, identifies a session by the `Mcp-Session-Id` header. The id is
+   * trusted as given: it is the transport's job to have minted and validated
+   * it, exactly as the cookie path signs and verifies its own.
+   */
+  async acquireById(id) {
+    const cached = this.#containers.get(id);
+    if (cached && !cached.disposed) {
+      await this.store.touch(id);
+      return { container: cached, id, isNew: false };
+    }
+    const container = this.#root.createChild("session");
+    const stored = await this.store.get(id);
+    if (stored) {
+      for (const [key, value] of Object.entries(stored)) container.set(key, value);
+    } else {
+      await this.store.set(id, {});
+    }
+    this.#containers.set(id, container);
+    return { container, id, isNew: stored === null || stored === void 0 };
   }
   /** Writes the session container's session-scoped values back to the store. */
   async persist(id, container) {
@@ -1493,11 +2057,12 @@ var CloveApp = class {
   root;
   logger;
   ws;
+  mcp;
   sessions;
   scan;
   #options;
   #closed = false;
-  constructor(scan, root, logger, sessions, ws2, options2) {
+  constructor(scan, root, logger, sessions, ws2, mcp, options2) {
     this.scan = scan;
     this.registry = scan.registry;
     this.routes = scan.routes;
@@ -1505,6 +2070,7 @@ var CloveApp = class {
     this.logger = logger;
     this.sessions = sessions;
     this.ws = ws2;
+    this.mcp = mcp;
     this.#options = options2;
   }
   /**
@@ -1514,6 +2080,21 @@ var CloveApp = class {
   async handle(rawReq, rawRes) {
     const req = new CloveRequest(rawReq, this.#options.bodyLimit);
     const res = new CloveResponse(rawRes);
+    if (!this.mcp.empty && req.path === this.mcp.path) {
+      const body = req.method === "POST" ? await req.readBody() : void 0;
+      try {
+        return await this.mcp.handle(rawReq, rawRes, body);
+      } catch (err) {
+        this.logger.error("MCP transport error:", err);
+        if (!rawRes.headersSent) {
+          writeError(err, res, {
+            exposeErrors: this.#options.exposeErrors,
+            logger: this.logger
+          });
+        }
+        return true;
+      }
+    }
     const match = this.routes.match(req.method, req.path);
     if (!match) return false;
     req.params = match.params;
@@ -1592,6 +2173,7 @@ var CloveApp = class {
   async close() {
     if (this.#closed) return;
     this.#closed = true;
+    await this.mcp.close().catch((err) => this.logger.error("mcp close:", err));
     await this.ws.close().catch((err) => this.logger.error("ws close:", err));
     await this.sessions.disposeAll().catch((err) => this.logger.error("session cleanup:", err));
     await this.root.dispose();
@@ -1636,7 +2218,16 @@ async function createApp(options2 = {}) {
     root,
     logger
   });
-  return new CloveApp(scan, root, logger, sessions, ws2, {
+  const mcp = new McpRuntime({
+    scan: scan.mcp,
+    root,
+    logger,
+    sessions,
+    ...options2.mcpPath ? { path: options2.mcpPath } : {},
+    ...options2.mcpServerInfo ? { serverInfo: options2.mcpServerInfo } : {},
+    exposeErrors: options2.exposeErrors ?? isDev
+  });
+  return new CloveApp(scan, root, logger, sessions, ws2, mcp, {
     bodyLimit: options2.bodyLimit ?? DEFAULT_BODY_LIMIT,
     exposeErrors: options2.exposeErrors ?? isDev
   });
@@ -1666,8 +2257,9 @@ async function bootstrap(options2 = {}) {
   const url = `http://${host}:${actualPort}`;
   const routeCount = app.routes.list().length;
   const socketCount = app.scan.socketHandlers.size;
+  const { tools } = app.mcp.counts;
   app.logger.info(
-    `CloveJS listening on ${url} \u2014 ${routeCount} route${routeCount === 1 ? "" : "s"}` + (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "")
+    `CloveJS listening on ${url} \u2014 ${routeCount} route${routeCount === 1 ? "" : "s"}` + (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "") + (app.mcp.empty ? "" : `, MCP on ${app.mcp.path} with ${tools} tool${tools === 1 ? "" : "s"}`)
   );
   let closing;
   const close = async () => {

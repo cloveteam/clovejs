@@ -2,6 +2,14 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Registry, type Provider } from "../container/registry.js"
 import { CloveBootError } from "../errors.js"
+import { deriveMcpName, deriveResourceUri } from "../mcp/paths.js"
+import { assertPromptShape, toRawShape } from "../mcp/schema.js"
+import type {
+  McpPromptDefinition,
+  McpResourceDefinition,
+  McpScan,
+  McpToolDefinition,
+} from "../mcp/types.js"
 import { RouterTrie } from "../router/trie.js"
 import {
   META,
@@ -42,6 +50,7 @@ export interface ScanResult {
   middlewares: LoadedMiddleware[]
   sockets: RouterTrie
   socketHandlers: Map<string, SocketRoute>
+  mcp: McpScan
   registry: Registry
   /** Every file that contributed, for the dev watcher. */
   files: string[]
@@ -54,7 +63,7 @@ export interface ScanOptions {
   dirs?: Partial<Record<ConventionDir, string>>
 }
 
-export type ConventionDir = "api" | "ws" | "di" | "services" | "middlewares"
+export type ConventionDir = "api" | "ws" | "di" | "services" | "middlewares" | "mcp"
 
 export const DEFAULT_DIRS: Record<ConventionDir, string> = {
   api: "api",
@@ -62,7 +71,15 @@ export const DEFAULT_DIRS: Record<ConventionDir, string> = {
   di: "di",
   services: "services",
   middlewares: "middlewares",
+  mcp: "mcp",
 }
+
+/** Subdirectories of `mcp/`, and the definition each one must export. */
+const MCP_KINDS = {
+  tools: "mcpTool",
+  resources: "mcpResource",
+  prompts: "mcpPrompt",
+} as const
 
 /**
  * Reads the whole project into a registry, router and middleware chain.
@@ -200,6 +217,77 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     socketHandlers.set(path, socket)
   }
 
+  // --- mcp/ ----------------------------------------------------------------
+  const mcp: McpScan = { tools: [], resources: [], prompts: [] }
+  const mcpNames = new Map<string, string>()
+
+  for (const [sub, expected] of Object.entries(MCP_KINDS) as Array<
+    [keyof typeof MCP_KINDS, (typeof MCP_KINDS)[keyof typeof MCP_KINDS]]
+  >) {
+    const dir = join(sourceDir, dirs.mcp, sub)
+    for (const file of await walkDir(dir)) {
+      files.push(file.absolute)
+      const def = await loadDefault(loader, file.absolute)
+      const actual = definitionKind(def)
+
+      if (actual !== expected) {
+        const wrapper = expected.replace("mcp", "").toLowerCase()
+        throw new CloveBootError(
+          `Files in ${dirs.mcp}/${sub}/ must default-export ${wrapper}(...), ` +
+            `but this one exports ${describe(actual)}.`,
+          [file.absolute],
+        )
+      }
+
+      if (sub === "resources") {
+        const d = def as McpResourceDefinition
+        const uri = d.uri ?? deriveResourceUri(file.relative)
+        const name = d.name ?? deriveMcpName(file.relative)
+        claim(mcpNames, `resource:${uri}`, file.absolute, `resource URI "${uri}"`)
+        mcp.resources.push({
+          uri,
+          name,
+          description: d.description,
+          title: d.title,
+          mimeType: d.mimeType,
+          handler: d.handler,
+          file: file.absolute,
+        })
+        continue
+      }
+
+      const name = (def as { name: string | null }).name ?? deriveMcpName(file.relative)
+      claim(mcpNames, `${sub}:${name}`, file.absolute, `${singular(sub)} name "${name}"`)
+
+      if (sub === "tools") {
+        const d = def as McpToolDefinition
+        mcp.tools.push({
+          name,
+          description: d.description,
+          title: d.title,
+          input: d.input,
+          // Normalised here rather than on first request, so a malformed
+          // schema is a boot error naming the file, like every other one.
+          shape: toRawShape(d.input, file.absolute),
+          handler: d.handler,
+          meta: Object.freeze({ ...d[META] }),
+          file: file.absolute,
+        })
+      } else {
+        const d = def as McpPromptDefinition
+        mcp.prompts.push({
+          name,
+          description: d.description,
+          title: d.title,
+          input: d.input,
+          shape: assertPromptShape(toRawShape(d.input, file.absolute), file.absolute),
+          handler: d.handler,
+          file: file.absolute,
+        })
+      }
+    }
+  }
+
   // --- middlewares/ --------------------------------------------------------
   const mwDir = join(sourceDir, dirs.middlewares)
   for (const file of await walkDir(mwDir)) {
@@ -221,12 +309,34 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   }
   middlewares.sort(comparePriority)
 
-  return { routes, middlewares, sockets, socketHandlers, registry, files }
+  return { routes, middlewares, sockets, socketHandlers, mcp, registry, files }
 }
 
 function describe(kind: string | null): string {
   if (kind === null) return "a plain value (not an CloveJS definition)"
   return `${kind}(...)`
+}
+
+/** Reserves a name or URI, failing at boot when two files want the same one. */
+function claim(
+  taken: Map<string, string>,
+  key: string,
+  file: string,
+  label: string,
+): void {
+  const previous = taken.get(key)
+  if (previous) {
+    throw new CloveBootError(
+      `Duplicate ${label}: two files both claim it. Rename one of them, or ` +
+        `set an explicit name in the definition.`,
+      [previous, file],
+    )
+  }
+  taken.set(key, file)
+}
+
+function singular(sub: string): string {
+  return sub.endsWith("s") ? sub.slice(0, -1) : sub
 }
 
 /**

@@ -8,6 +8,8 @@ never configure which one you are using.
 src/
   api/          route handlers      -> HTTP endpoints
   ws/           socket handlers     -> WebSocket endpoints
+  mcp/          tools, resources,
+                prompts             -> MCP server
   di/           injectable values
   services/     injectable services
   middlewares/  request middlewares
@@ -21,6 +23,7 @@ src/
 | --- | --- | --- |
 | `api/` | Modules whose default export is `get()`, `post()`, … | HTTP routes, path mirroring the file path |
 | `ws/` | Modules whose default export is `ws()` | WebSocket endpoints under `/ws/…` |
+| `mcp/` | `tools/`, `resources/` and `prompts/` subdirectories | An [MCP server](/guide/mcp) at `/mcp` |
 | `services/` | Modules whose default export is `service()` | `ctx.<filename>`, a singleton created at boot |
 | `di/` | Modules whose default export is `di()` | `ctx.<filename>`, scoped per its declared lifetime |
 | `middlewares/` | Modules whose default export is `middleware()` | Wrappers around every route, run in [order](/guide/middlewares#ordering) |

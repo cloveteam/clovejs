@@ -78,6 +78,7 @@ export default defineConfig({
           text: "Beyond HTTP",
           items: [
             { text: "WebSockets", link: "/guide/websockets" },
+            { text: "MCP servers", link: "/guide/mcp" },
             { text: "Sessions", link: "/guide/sessions" },
           ],
         },

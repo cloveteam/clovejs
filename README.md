@@ -30,6 +30,7 @@ with zero manual registration.
 - 🔤 **TypeScript from the box.** Fully typed, automatically — no manual annotations, ever.
 - 🧩 **DI in the box.** Singleton, session and request lifetime scopes.
 - 🔌 **WebSockets included.** Same conventions, `[param]` segments and all.
+- 🧠 **MCP servers too.** Drop a file in `mcp/tools/` and your app is a Model Context Protocol server.
 - 🤝 **Adopts incrementally.** Mount Clove in an app you already have and migrate routes over at your own pace.
 - 🤖 **Agent-ready.** `npx clove skills` teaches your AI editor the conventions.
 
@@ -54,6 +55,7 @@ reference and deployment notes. Sources live in [`docs/`](./docs).
 - 📦 [The JSON middleware](#the-json-middleware)
 - 🚨 [Errors](#errors)
 - 🔌 [WebSockets](#websockets)
+- 🧠 [MCP servers](#mcp-servers)
 - 🍪 [Sessions](#sessions)
 - 🤝 [Bootstrap and Express interop](#bootstrap-and-express-interop)
 - 🧪 [Example](#example)
@@ -70,6 +72,7 @@ directories at the root. Both are detected automatically.
 src/
   api/          route handlers      -> HTTP endpoints
   ws/           socket handlers     -> WebSocket endpoints
+  mcp/          tools, resources    -> MCP server
   di/           injectable values
   services/     injectable services
   middlewares/  request middlewares
@@ -326,6 +329,68 @@ Each connection gets its own request-scoped container, disposed when the socket
 closes. HTTP middlewares do **not** run for upgrades — authenticate inside the
 handler using `ctx`.
 
+## MCP servers
+
+Files in `mcp/` turn your project into a [Model Context
+Protocol](https://modelcontextprotocol.io) server, so an AI assistant can call
+into it. `mcp/tools/searchNotes.ts` becomes the tool `searchNotes`:
+
+```ts
+import { tool } from "clovejs/mcp"
+import { z } from "zod"
+
+export default tool({
+  description: "Full-text search across the user's notes",
+  input: z.object({
+    query: z.string().describe("Search query"),
+    limit: z.number().int().max(50).default(10),
+  }),
+  async handler({ query, limit }, ctx) {
+    return ctx.notes.search(query, { limit })
+  },
+}).meta({
+  readOnly: true,
+})
+```
+
+The `input` schema does three jobs at once: it is published to the client as
+JSON Schema, it validates and applies defaults before the handler runs, and it
+types the handler's first argument — no annotations from you.
+
+Resources are read by URI, derived from the file path the same way routes are.
+`mcp/resources/notes/[id].ts` serves `notes://{id}`:
+
+```ts
+import { resource, error } from "clovejs/mcp"
+
+export default resource({
+  description: "A single note by id",
+  mimeType: "text/markdown",
+  async handler({ id }, ctx) {
+    const note = await ctx.notes.findById(id)
+    if (!note) throw error(404, { message: "No such note" })
+    return note.markdown
+  },
+})
+```
+
+`mcp/prompts/` holds prompt templates, rounding out the three MCP primitives.
+
+Everything else works the way it does elsewhere: `ctx` is the same injected
+context, `session`-scoped values are scoped to one MCP session, and
+`error(status, body)` decides what the model is told — a 4xx comes back as a
+readable failure it can correct, while anything else is logged and reported as
+an internal error.
+
+```bash
+npm install @modelcontextprotocol/sdk zod   # optional peer dependencies
+npx clove mcp                               # print the tools, resources and prompts
+```
+
+`bootstrap()` serves the endpoint at `/mcp` alongside your routes. For clients
+that launch a server as a subprocess, `npx clove mcp --stdio` serves the same
+project over stdio.
+
 ## Sessions
 
 Declaring any `session`-scoped value turns sessions on. Visitors are identified
@@ -413,6 +478,7 @@ extension](https://marketplace.visualstudio.com/items?itemName=humao.rest-client
 | `clove types` | Regenerate `.clove/types.d.ts` only |
 | `clove scaffold` | Create the default structure (`--js` for JavaScript) |
 | `clove routes` | Print the resolved route table |
+| `clove mcp` | Print the MCP surface, or serve it with `--stdio` |
 | `clove skills` | Install CloveJS instructions for AI editors |
 
 Scaffolding is an explicit command rather than an install-time prompt: package

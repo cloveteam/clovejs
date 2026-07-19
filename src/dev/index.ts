@@ -135,7 +135,16 @@ function logSummary(app: CloveApp, logger: Logger, url: string): void {
   for (const path of app.scan.socketHandlers.keys()) {
     logger.info(`  ${"WS".padEnd(7)} ${path}`)
   }
-  if (routes.length === 0 && app.scan.socketHandlers.size === 0) {
+  if (!app.mcp.empty) {
+    const { tools, resources, prompts } = app.mcp.counts
+    const parts = [
+      `${tools} tool${tools === 1 ? "" : "s"}`,
+      `${resources} resource${resources === 1 ? "" : "s"}`,
+      `${prompts} prompt${prompts === 1 ? "" : "s"}`,
+    ]
+    logger.info(`  ${"MCP".padEnd(7)} ${app.mcp.path}  (${parts.join(", ")})`)
+  }
+  if (routes.length === 0 && app.scan.socketHandlers.size === 0 && app.mcp.empty) {
     logger.warn(
       "No routes found. Add a file under api/, e.g. api/hello.get.ts, " +
         "or run `clove scaffold` to create the project structure.",

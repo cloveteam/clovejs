@@ -8,6 +8,7 @@ clove — CloveJS project commands
   clove types                           Generate .clove/types.d.ts only
   clove scaffold [--js] [--force]       Create the default project structure
   clove routes                          Print the resolved route table
+  clove mcp [--stdio]                   Print the MCP surface, or serve it over stdio
   clove skills [--ide <a,b>] [--force]  Install CloveJS instructions for AI editors
 
 Options:
@@ -97,6 +98,53 @@ POST    /api/v1/login
 The fastest way to confirm that a filename produced the URL you expected. It
 boots the app with logging silenced, so convention violations still surface as
 [boot errors](/guide/errors#boot-errors).
+
+WebSocket endpoints and the [MCP](/guide/mcp) endpoint are listed too:
+
+```
+GET     /api/v1/users
+WS      /ws/echo
+MCP     /mcp
+```
+
+## `clove mcp`
+
+Prints the [MCP](/guide/mcp) surface — every tool, resource and prompt the
+project exposes, with the name or URI it resolved to:
+
+```
+Endpoint  /mcp
+
+tool      searchNotes              Full-text search across the user's notes
+tool      createNote               Create a new note
+resource  notes://{id}             A single note by id
+resource  config://app             Server configuration
+prompt    summarize                Summarize a note
+```
+
+The `clove routes` of MCP: the fastest way to confirm a filename produced the
+tool name or resource URI you expected.
+
+### `--stdio`
+
+Serves the project over stdio instead of printing, for clients that launch an
+MCP server as a subprocess:
+
+```json
+{
+  "mcpServers": {
+    "my-app": {
+      "command": "npx",
+      "args": ["clove", "mcp", "--stdio"],
+      "cwd": "/path/to/project"
+    }
+  }
+}
+```
+
+stdout carries the protocol, so `console.log`, `.info` and `.debug` are
+redirected to stderr before the project boots. The process serves until the
+client disconnects.
 
 ## `clove skills`
 

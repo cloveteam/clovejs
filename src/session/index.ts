@@ -87,6 +87,35 @@ export class SessionManager {
     return { container, id, isNew: true }
   }
 
+  /**
+   * Resolves the session container for an id supplied by the caller, rather
+   * than read from a cookie.
+   *
+   * Transports that carry their own session identity use this — MCP, for
+   * instance, identifies a session by the `Mcp-Session-Id` header. The id is
+   * trusted as given: it is the transport's job to have minted and validated
+   * it, exactly as the cookie path signs and verifies its own.
+   */
+  async acquireById(
+    id: string,
+  ): Promise<{ container: Container; id: string; isNew: boolean }> {
+    const cached = this.#containers.get(id)
+    if (cached && !cached.disposed) {
+      await this.store.touch(id)
+      return { container: cached, id, isNew: false }
+    }
+
+    const container = this.#root.createChild("session")
+    const stored = await this.store.get(id)
+    if (stored) {
+      for (const [key, value] of Object.entries(stored)) container.set(key, value)
+    } else {
+      await this.store.set(id, {})
+    }
+    this.#containers.set(id, container)
+    return { container, id, isNew: stored === null || stored === undefined }
+  }
+
   /** Writes the session container's session-scoped values back to the store. */
   async persist(id: string, container: Container): Promise<void> {
     const data: Record<string, unknown> = {}

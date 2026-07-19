@@ -7,6 +7,7 @@ import { error } from "./errors.js"
 import { DEFAULT_BODY_LIMIT } from "./http/body.js"
 import { CloveRequest } from "./http/request.js"
 import { CloveResponse } from "./http/response.js"
+import { McpRuntime } from "./mcp/runtime.js"
 import { runPipeline, writeError } from "./pipeline/index.js"
 import type { RouterTrie } from "./router/trie.js"
 import {
@@ -36,6 +37,10 @@ export interface AppOptions {
    * that a reload actually re-reads changed files.
    */
   moduleCache?: boolean
+  /** Path the MCP endpoint is served from. Defaults to `/mcp`. */
+  mcpPath?: string
+  /** Name and version reported to MCP clients. Defaults to the package name. */
+  mcpServerInfo?: { name: string; version: string }
 }
 
 /**
@@ -48,6 +53,7 @@ export class CloveApp {
   readonly root: Container
   readonly logger: Logger
   readonly ws: WsRuntime
+  readonly mcp: McpRuntime
   readonly sessions: SessionManager
   readonly scan: ScanResult
 
@@ -60,6 +66,7 @@ export class CloveApp {
     logger: Logger,
     sessions: SessionManager,
     ws: WsRuntime,
+    mcp: McpRuntime,
     options: Required<Pick<AppOptions, "bodyLimit" | "exposeErrors">>,
   ) {
     this.scan = scan
@@ -69,6 +76,7 @@ export class CloveApp {
     this.logger = logger
     this.sessions = sessions
     this.ws = ws
+    this.mcp = mcp
     this.#options = options
   }
 
@@ -79,6 +87,25 @@ export class CloveApp {
   async handle(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<boolean> {
     const req = new CloveRequest(rawReq, this.#options.bodyLimit)
     const res = new CloveResponse(rawRes)
+
+    // MCP owns its endpoint outright: it speaks JSON-RPC over its own
+    // transport, so it runs before route matching and outside the middleware
+    // chain, the same way WebSocket upgrades bypass both.
+    if (!this.mcp.empty && req.path === this.mcp.path) {
+      const body = req.method === "POST" ? await req.readBody() : undefined
+      try {
+        return await this.mcp.handle(rawReq, rawRes, body)
+      } catch (err) {
+        this.logger.error("MCP transport error:", err)
+        if (!rawRes.headersSent) {
+          writeError(err, res, {
+            exposeErrors: this.#options.exposeErrors,
+            logger: this.logger,
+          })
+        }
+        return true
+      }
+    }
 
     const match = this.routes.match(req.method, req.path)
     if (!match) return false
@@ -182,6 +209,7 @@ export class CloveApp {
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    await this.mcp.close().catch((err) => this.logger.error("mcp close:", err))
     await this.ws.close().catch((err) => this.logger.error("ws close:", err))
     await this.sessions
       .disposeAll()
@@ -251,7 +279,17 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     logger,
   })
 
-  return new CloveApp(scan, root, logger, sessions, ws, {
+  const mcp = new McpRuntime({
+    scan: scan.mcp,
+    root,
+    logger,
+    sessions,
+    ...(options.mcpPath ? { path: options.mcpPath } : {}),
+    ...(options.mcpServerInfo ? { serverInfo: options.mcpServerInfo } : {}),
+    exposeErrors: options.exposeErrors ?? isDev,
+  })
+
+  return new CloveApp(scan, root, logger, sessions, ws, mcp, {
     bodyLimit: options.bodyLimit ?? DEFAULT_BODY_LIMIT,
     exposeErrors: options.exposeErrors ?? isDev,
   })

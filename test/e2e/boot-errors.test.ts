@@ -96,3 +96,81 @@ describe("boot-time validation", () => {
     await expect(boot({})).resolves.toBeUndefined()
   })
 })
+
+describe("mcp validation", () => {
+  it("rejects an mcp/tools file that exports the wrong definition", async () => {
+    const promise = boot({
+      "mcp/tools/thing.ts": `import { get } from "clovejs"\nexport default get(async () => ({}))\n`,
+    })
+    await expect(promise).rejects.toThrow(/must default-export tool\(\.\.\.\)/)
+    await expect(promise).rejects.toThrow(/thing\.ts/)
+  })
+
+  it("rejects a resource() placed in mcp/tools/", async () => {
+    const promise = boot({
+      "mcp/tools/thing.ts":
+        `import { resource } from "clovejs/mcp"\n` +
+        `export default resource({ description: "x", handler: async () => "" })\n`,
+    })
+    await expect(promise).rejects.toThrow(/must default-export tool\(\.\.\.\)/)
+  })
+
+  it("rejects a prompt() placed in mcp/resources/", async () => {
+    const promise = boot({
+      "mcp/resources/thing.ts":
+        `import { prompt } from "clovejs/mcp"\n` +
+        `export default prompt({ description: "x", handler: async () => "" })\n`,
+    })
+    await expect(promise).rejects.toThrow(/must default-export resource\(\.\.\.\)/)
+  })
+
+  it("names both files when two tools claim the same name", async () => {
+    const tool = (name: string) =>
+      `import { tool } from "clovejs/mcp"\n` +
+      `export default tool({ name: ${JSON.stringify(name)}, description: "x", handler: async () => "" })\n`
+
+    const promise = boot({
+      "mcp/tools/a.ts": tool("search"),
+      "mcp/tools/b.ts": tool("search"),
+    })
+    await expect(promise).rejects.toThrow(/Duplicate tool name "search"/)
+    await expect(promise).rejects.toThrow(/a\.ts/)
+    await expect(promise).rejects.toThrow(/b\.ts/)
+  })
+
+  it("names both files when two resources claim the same URI", async () => {
+    const promise = boot({
+      "mcp/resources/notes/[id].ts":
+        `import { resource } from "clovejs/mcp"\n` +
+        `export default resource({ description: "x", handler: async () => "" })\n`,
+      "mcp/resources/other.ts":
+        `import { resource } from "clovejs/mcp"\n` +
+        `export default resource({ uri: "notes://{id}", description: "x", handler: async () => "" })\n`,
+    })
+    await expect(promise).rejects.toThrow(/Duplicate resource URI "notes:\/\/\{id\}"/)
+  })
+
+  it("rejects a non-object input schema", async () => {
+    const promise = boot({
+      "mcp/tools/thing.ts":
+        `import { tool } from "clovejs/mcp"\nimport { z } from "zod"\n` +
+        `export default tool({ description: "x", input: z.string() as any, handler: async () => "" })\n`,
+    })
+    await expect(promise).rejects.toThrow(/must be an object schema/)
+  })
+
+  it("rejects a non-string prompt argument, which MCP cannot transport", async () => {
+    const promise = boot({
+      "mcp/prompts/thing.ts":
+        `import { prompt } from "clovejs/mcp"\nimport { z } from "zod"\n` +
+        `export default prompt({ description: "x", input: z.object({ n: z.number() }), handler: async () => "" })\n`,
+    })
+    await expect(promise).rejects.toThrow(/transports prompt arguments as strings/)
+  })
+
+  it("boots a project with no mcp/ directory", async () => {
+    await expect(
+      boot({ "api/ok.get.ts": `import { get } from "clovejs"\nexport default get(async () => ({}))\n` }),
+    ).resolves.toBeUndefined()
+  })
+})

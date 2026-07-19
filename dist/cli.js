@@ -6,7 +6,7 @@ import {
   deriveContextKey,
   resolveSourceDir,
   walkDir
-} from "./chunk-O7VDY6JW.js";
+} from "./chunk-M6MLQFW7.js";
 
 // src/cli/index.ts
 import { execFileSync } from "child_process";
@@ -208,7 +208,16 @@ function logSummary(app, logger, url) {
   for (const path of app.scan.socketHandlers.keys()) {
     logger.info(`  ${"WS".padEnd(7)} ${path}`);
   }
-  if (routes.length === 0 && app.scan.socketHandlers.size === 0) {
+  if (!app.mcp.empty) {
+    const { tools, resources, prompts } = app.mcp.counts;
+    const parts = [
+      `${tools} tool${tools === 1 ? "" : "s"}`,
+      `${resources} resource${resources === 1 ? "" : "s"}`,
+      `${prompts} prompt${prompts === 1 ? "" : "s"}`
+    ];
+    logger.info(`  ${"MCP".padEnd(7)} ${app.mcp.path}  (${parts.join(", ")})`);
+  }
+  if (routes.length === 0 && app.scan.socketHandlers.size === 0 && app.mcp.empty) {
     logger.warn(
       "No routes found. Add a file under api/, e.g. api/hello.get.ts, or run `clove scaffold` to create the project structure."
     );
@@ -237,7 +246,16 @@ async function scaffold(options) {
     await writeFile2(full, contents, "utf8");
     created.push(path);
   };
-  for (const dir of ["api", "ws", "di", "services", "middlewares"]) {
+  for (const dir of [
+    "api",
+    "ws",
+    "di",
+    "services",
+    "middlewares",
+    "mcp/tools",
+    "mcp/resources",
+    "mcp/prompts"
+  ]) {
     await mkdir2(join3(base, dir), { recursive: true });
   }
   const prefix = typescript ? "src/" : "";
@@ -342,10 +360,11 @@ import { join as join4 } from "path";
 
 // src/cli/skills/content.ts
 var SKILL_NAME = "clovejs";
-var SKILL_DESCRIPTION = "Conventions for writing CloveJS code \u2014 file-based routes, services, DI lifetimes, middlewares, WebSockets and the CLI. Use whenever editing a project that depends on the `clovejs` package.";
+var SKILL_DESCRIPTION = "Conventions for writing CloveJS code \u2014 file-based routes, services, DI lifetimes, middlewares, WebSockets, MCP servers and the CLI. Use whenever editing a project that depends on the `clovejs` package.";
 var SKILL_GLOBS = [
   "**/api/**",
   "**/ws/**",
+  "**/mcp/**",
   "**/di/**",
   "**/services/**",
   "**/middlewares/**",
@@ -368,6 +387,8 @@ match whichever the project already uses.
 src/
   api/          route handlers      -> HTTP endpoints
   ws/           socket handlers     -> WebSocket endpoints
+  mcp/          tools, resources,
+                prompts             -> MCP server at /mcp
   di/           injectable values
   services/     injectable services
   middlewares/  request middlewares
@@ -546,6 +567,71 @@ Each connection gets its own request-scoped container, disposed when the socket
 closes. **HTTP middlewares do not run for upgrades** \u2014 authenticate inside the
 handler using \`ctx\`.
 
+## MCP servers
+
+Files in \`mcp/\` expose the project as a Model Context Protocol server. The
+SDK and zod are **optional peer dependencies** \u2014 install
+\`@modelcontextprotocol/sdk\` and \`zod\` before adding the first file.
+
+Import the definitions from \`clovejs/mcp\`, not \`clovejs\`.
+
+\`mcp/tools/searchNotes.ts\` becomes the tool \`searchNotes\`:
+
+\`\`\`ts
+import { tool } from "clovejs/mcp"
+import { z } from "zod"
+
+export default tool({
+  description: "Full-text search across the user's notes",
+  input: z.object({ query: z.string(), limit: z.number().default(10) }),
+  async handler({ query, limit }, ctx) {
+    return ctx.notes.search(query, { limit })
+  },
+}).meta({ readOnly: true })
+\`\`\`
+
+\`input\` is published as JSON Schema, validated before the handler runs, and
+types the handler's first argument \u2014 do not annotate it by hand. Write
+\`description\` for the model: it is what decides whether the tool gets called.
+
+Resources are read by URI, derived from the file path \u2014 the first segment is
+the scheme, \`[param]\` becomes \`{param}\`. \`mcp/resources/notes/[id].ts\`
+serves \`notes://{id}\`:
+
+\`\`\`ts
+import { resource, error } from "clovejs/mcp"
+
+export default resource({
+  description: "A single note by id",
+  mimeType: "text/markdown",
+  async handler({ id }, ctx) {
+    const note = await ctx.notes.findById(id)
+    if (!note) throw error(404, { message: "No such note" })
+    return note.markdown
+  },
+})
+\`\`\`
+
+\`mcp/prompts/\` holds prompt templates; their arguments must be
+\`z.string()\`, since MCP transports them as strings.
+
+Rules that differ from routes:
+
+- Tool and prompt names flatten in camelCase like \`ctx\` keys
+  (\`mcp/tools/notes/search.ts\` -> \`notesSearch\`).
+- Return values are serialised like the JSON middleware does; return content
+  blocks directly only when you need images or multiple blocks.
+- **HTTP middlewares do not run for MCP calls** \u2014 authenticate inside the
+  handler using \`ctx\`, as with WebSockets.
+- \`session\`-scoped values are scoped to one MCP session; \`request\`-scoped
+  ones to a single call.
+- A 4xx from \`error()\` is returned to the model as a readable failure it can
+  act on. Anything else is logged and reported as an internal error, so do not
+  rely on a 500's message reaching the client.
+
+Run \`npx clove mcp\` to print the resolved tools, resources and prompts, or
+\`npx clove mcp --stdio\` to serve the project over stdio.
+
 ## Sessions
 
 Declaring any \`session\`-scoped value turns sessions on. Visitors are
@@ -587,6 +673,7 @@ Requests matching no Clove route fall through to the host's own stack.
 | \`clove types\` | Regenerate \`.clove/types.d.ts\` only |
 | \`clove scaffold\` | Create the default structure (\`--js\` for JavaScript) |
 | \`clove routes\` | Print the resolved route table |
+| \`clove mcp\` | Print the MCP surface (\`--stdio\` to serve over stdio) |
 | \`clove skills\` | Install these instructions for AI editors |
 
 Every command takes \`--dir <path>\` to target another project root.
@@ -607,7 +694,8 @@ generation is a path-level scan, so it never executes project code.
 - Reach dependencies through \`ctx\`, never by importing another provider
   module directly.
 - Run \`npx clove routes\` to confirm a filename produced the URL you expected,
-  and \`npx clove types\` after touching \`services/\` or \`di/\`.
+  \`npx clove mcp\` for tool names and resource URIs, and \`npx clove types\`
+  after touching \`services/\` or \`di/\`.
 `.trim();
 
 // src/cli/skills/index.ts
@@ -746,6 +834,7 @@ clove \u2014 CloveJS project commands
   clove types                           Generate .clove/types.d.ts only
   clove scaffold [--js] [--force]       Create the default project structure
   clove routes                          Print the resolved route table
+  clove mcp [--stdio]                   Print the MCP surface, or serve it over stdio
   clove skills [--ide <a,b>] [--force]  Install CloveJS instructions for AI editors
 
 Options:
@@ -854,13 +943,58 @@ Done. Your assistant picks these up on its next session.` + (result.skipped.leng
       return;
     }
     case "routes": {
-      const { createApp: createApp2 } = await import("./app-3PUEN3HT.js");
+      const { createApp: createApp2 } = await import("./app-3GYIBHWU.js");
       const app = await createApp2({ rootDir, logLevel: "silent" });
       for (const route of app.routes.list()) {
         console.log(`${route.method.padEnd(7)} ${route.path}`);
       }
       for (const path of app.scan.socketHandlers.keys()) {
         console.log(`${"WS".padEnd(7)} ${path}`);
+      }
+      if (!app.mcp.empty) {
+        console.log(`${"MCP".padEnd(7)} ${app.mcp.path}`);
+      }
+      await app.close();
+      return;
+    }
+    case "mcp": {
+      const { createApp: createApp2 } = await import("./app-3GYIBHWU.js");
+      if (flags.stdio) {
+        console.log = console.error;
+        console.info = console.error;
+        console.debug = console.error;
+        const app2 = await createApp2({ rootDir, logLevel: "info" });
+        if (app2.mcp.empty) {
+          console.error(`No MCP definitions found under ${sourceDir}/mcp/.`);
+          await app2.close();
+          process.exitCode = 1;
+          return;
+        }
+        const shutdown = () => {
+          void app2.close().then(() => process.exit(0));
+        };
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+        await app2.mcp.serveStdio();
+        await app2.close();
+        return;
+      }
+      const app = await createApp2({ rootDir, logLevel: "silent" });
+      const { tools, resources, prompts } = app.scan.mcp;
+      if (app.mcp.empty) {
+        console.log(`No MCP definitions found under ${sourceDir}/mcp/.`);
+      } else {
+        console.log(`Endpoint  ${app.mcp.path}
+`);
+        for (const tool of tools) {
+          console.log(`${"tool".padEnd(9)} ${tool.name.padEnd(24)} ${tool.description}`);
+        }
+        for (const res of resources) {
+          console.log(`${"resource".padEnd(9)} ${res.uri.padEnd(24)} ${res.description}`);
+        }
+        for (const p of prompts) {
+          console.log(`${"prompt".padEnd(9)} ${p.name.padEnd(24)} ${p.description}`);
+        }
       }
       await app.close();
       return;

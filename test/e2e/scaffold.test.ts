@@ -34,6 +34,9 @@ describe("scaffold", () => {
     for (const sub of ["api", "ws", "di", "services", "middlewares"]) {
       expect(await isDir(join(dir, "src", sub))).toBe(true)
     }
+    for (const sub of ["tools", "resources", "prompts"]) {
+      expect(await isDir(join(dir, "src", "mcp", sub))).toBe(true)
+    }
     expect(result.created).toContain("src/main.ts")
     expect(result.created).toContain("tsconfig.json")
 

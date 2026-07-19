@@ -17,6 +17,8 @@ Accepted by `createApp()` and `engine()`, and inherited by `bootstrap()`.
 | `sessionTtl` | `number` | 24 hours | Session idle lifetime, in milliseconds |
 | `exposeErrors` | `boolean` | dev only | Include error messages and stacks in `500` responses |
 | `moduleCache` | `boolean` | `true` | Cache evaluated modules. `clove dev` sets it `false` so reloads re-read files |
+| `mcpPath` | `string` | `/mcp` | Path the [MCP](/guide/mcp) endpoint is served from |
+| `mcpServerInfo` | `{ name, version }` | package identity | Name and version reported to MCP clients |
 
 ## `BootstrapOptions`
 
