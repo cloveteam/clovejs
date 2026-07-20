@@ -1,4 +1,5 @@
 import { defineConfig } from "vitepress"
+import pkg from "../../package.json"
 
 // GitHub Pages serves the site from a repository subpath. Override with
 // DOCS_BASE=/ when deploying to a user/organisation page or a custom domain.
@@ -35,7 +36,7 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/guide/getting-started", activeMatch: "/guide/" },
       { text: "Reference", link: "/reference/cli", activeMatch: "/reference/" },
-      { text: "v0.1.0", link: "/reference/changelog" },
+      { text: `v${pkg.version}`, link: "/reference/changelog" },
     ],
 
     sidebar: {
