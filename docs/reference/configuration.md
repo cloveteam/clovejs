@@ -11,6 +11,7 @@ Accepted by `createApp()` and `engine()`, and inherited by `bootstrap()`.
 | --- | --- | --- | --- |
 | `rootDir` | `string` | `process.cwd()` | Project root |
 | `sourceDir` | `string` | auto-detected | Overrides the `src/` vs project-root detection |
+| `env` | `false \| string[]` | the `.env` cascade | `.env` files to load. `false` disables loading; an array names files explicitly. See [environment variables](/guide/bootstrap#environment-variables) |
 | `logLevel` | `LogLevel` | `debug` in dev, `info` otherwise | Console log threshold |
 | `bodyLimit` | `number` | — | Maximum request body size, in bytes |
 | `sessionSecret` | `string` | `CLOVE_SECRET` env | Key used to sign the session cookie |
@@ -48,9 +49,13 @@ await bootstrap({
 | `PORT` | Default port for `bootstrap()` |
 | `HOST` | Default bind address for `bootstrap()` |
 | `CLOVE_SECRET` | Session cookie signing key |
-| `NODE_ENV` | Selects dev vs production defaults for `logLevel` and `exposeErrors` |
+| `NODE_ENV` | Selects dev vs production defaults for `logLevel` and `exposeErrors`, and which `.env.[mode]` file is read |
 
 Explicit options always win over the environment.
+
+These can come from a `.env` file, which Clove
+[loads on startup](/guide/bootstrap#environment-variables). Values already
+present in the real environment are never overwritten by a file.
 
 ## Log levels
 

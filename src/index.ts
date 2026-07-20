@@ -21,6 +21,9 @@ export type { BootstrapOptions, Clove, CloveEngine } from "./bootstrap.js"
 export { createApp, CloveApp } from "./app.js"
 export type { AppOptions } from "./app.js"
 
+export { loadEnv, parseEnv } from "./env.js"
+export type { LoadEnvOptions } from "./env.js"
+
 export { CloveRequest } from "./http/request.js"
 export { CloveResponse } from "./http/response.js"
 export type { CookieOptions } from "./http/cookies.js"

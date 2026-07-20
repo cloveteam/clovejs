@@ -108,7 +108,7 @@ export async function scaffold(options: ScaffoldOptions): Promise<ScaffoldResult
 
   await write(
     ".gitignore",
-    ["node_modules/", "dist/", ".clove/", ".env", ""].join("\n"),
+    ["node_modules/", "dist/", ".clove/", ".env", ".env.*", "!.env.example", ""].join("\n"),
   )
 
   await upsertPackageJson(rootDir, typescript)

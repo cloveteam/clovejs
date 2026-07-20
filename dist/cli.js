@@ -6,7 +6,7 @@ import {
   deriveContextKey,
   resolveSourceDir,
   walkDir
-} from "./chunk-M6MLQFW7.js";
+} from "./chunk-W3VV3AY2.js";
 
 // src/cli/index.ts
 import { execFileSync } from "child_process";
@@ -401,7 +401,7 @@ export default service(async (ctx) => ({
   }
   await write2(
     ".gitignore",
-    ["node_modules/", "dist/", ".clove/", ".env", ""].join("\n")
+    ["node_modules/", "dist/", ".clove/", ".env", ".env.*", "!.env.example", ""].join("\n")
   );
   await upsertPackageJson(rootDir, typescript);
   return { created, skipped };
@@ -1021,7 +1021,7 @@ Done. Your assistant picks these up on its next session.` + (result.skipped.leng
       return;
     }
     case "routes": {
-      const { createApp: createApp2 } = await import("./app-3GYIBHWU.js");
+      const { createApp: createApp2 } = await import("./app-SXSZVM7J.js");
       const app = await createApp2({ rootDir, logLevel: "silent" });
       for (const route of app.routes.list()) {
         console.log(`${route.method.padEnd(7)} ${route.path}`);
@@ -1036,7 +1036,7 @@ Done. Your assistant picks these up on its next session.` + (result.skipped.leng
       return;
     }
     case "mcp": {
-      const { createApp: createApp2 } = await import("./app-3GYIBHWU.js");
+      const { createApp: createApp2 } = await import("./app-SXSZVM7J.js");
       if (flags.stdio) {
         console.log = console.error;
         console.info = console.error;

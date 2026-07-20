@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream"
 import { Container } from "./container/container.js"
 import { createLogger, type Logger, type LogLevel } from "./container/logger.js"
 import { Registry } from "./container/registry.js"
+import { loadEnv } from "./env.js"
 import { error } from "./errors.js"
 import { DEFAULT_BODY_LIMIT } from "./http/body.js"
 import { CloveRequest } from "./http/request.js"
@@ -24,6 +25,13 @@ export interface AppOptions {
   rootDir?: string
   /** Overrides the auto-detected `src/` vs project-root source directory. */
   sourceDir?: string
+  /**
+   * `.env` loading. Defaults to the cascade `.env.[NODE_ENV].local`,
+   * `.env.[NODE_ENV]`, `.env.local`, `.env` — earlier files win, and the real
+   * environment always wins over all of them. Pass `false` to disable, or an
+   * explicit list of files to load instead of the cascade.
+   */
+  env?: false | string[]
   logLevel?: LogLevel
   /** Maximum request body size in bytes. */
   bodyLimit?: number
@@ -225,10 +233,24 @@ export class CloveApp {
  */
 export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
   const rootDir = options.rootDir ?? process.cwd()
+
+  // Before anything else: services and di values read `process.env` at module
+  // scope, so the files must be in place by the time the scanner loads them.
+  const loadedEnv =
+    options.env === false
+      ? []
+      : loadEnv({
+          rootDir,
+          ...(Array.isArray(options.env) ? { files: options.env } : {}),
+        })
+
   const sourceDir = options.sourceDir ?? resolveSourceDir(rootDir)
   const isDev = process.env.NODE_ENV !== "production"
 
   const logger = createLogger(options.logLevel ?? (isDev ? "debug" : "info"))
+  if (loadedEnv.length > 0) {
+    logger.debug(`Loaded ${loadedEnv.length} variable(s) from .env: ${loadedEnv.join(", ")}`)
+  }
   const loader = await createLoader(rootDir, {
     moduleCache: options.moduleCache ?? true,
   })

@@ -88,6 +88,13 @@ interface AppOptions {
     rootDir?: string;
     /** Overrides the auto-detected `src/` vs project-root source directory. */
     sourceDir?: string;
+    /**
+     * `.env` loading. Defaults to the cascade `.env.[NODE_ENV].local`,
+     * `.env.[NODE_ENV]`, `.env.local`, `.env` — earlier files win, and the real
+     * environment always wins over all of them. Pass `false` to disable, or an
+     * explicit list of files to load instead of the cascade.
+     */
+    env?: false | string[];
     logLevel?: LogLevel;
     /** Maximum request body size in bytes. */
     bodyLimit?: number;
@@ -193,6 +200,31 @@ type CloveEngine = CloveApp["middleware"] & {
     close(): Promise<void>;
 };
 
+interface LoadEnvOptions {
+    /** Directory the `.env` files are resolved against. */
+    rootDir: string;
+    /** Selects the `.env.<mode>` variants. Defaults to `NODE_ENV`. */
+    mode?: string;
+    /** Explicit file list, relative to `rootDir` or absolute. Skips the cascade. */
+    files?: string[];
+}
+/**
+ * Loads `.env` files into `process.env`.
+ *
+ * Variables already present in the real environment always win, so an exported
+ * shell variable or a value injected by the deployment platform is never
+ * clobbered by a file checked into the repo.
+ *
+ * Returns the keys that were actually applied.
+ */
+declare function loadEnv(options: LoadEnvOptions): string[];
+/**
+ * Parses dotenv syntax: `KEY=value`, optional `export` prefix, `#` comments,
+ * and single, double or backtick quoting. Double-quoted values expand `\n`,
+ * `\r`, `\t` and escaped quotes, and may span multiple lines.
+ */
+declare function parseEnv(contents: string): Record<string, string>;
+
 /**
  * Extracts the value a `service(...)` definition resolves to. Used by the
  * generated `.clove/types.d.ts`.
@@ -204,4 +236,4 @@ type CloveService<T> = T extends ServiceDefinition<infer R> ? Awaited<R> : never
  */
 type CloveDi<T> = T extends DiDefinition<infer R> ? R extends (...args: any[]) => infer F ? Awaited<F> : R : never;
 
-export { type AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, LogLevel, Logger, MiddlewareDefinition, MiddlewareFn, Route, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, WsDefinition, WsHandlerFn, all, bootstrap, createApp, del, di, engine, get, head, middleware, options, patch, post, put, service, ws };
+export { type AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, type LoadEnvOptions, LogLevel, Logger, MiddlewareDefinition, MiddlewareFn, Route, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, WsDefinition, WsHandlerFn, all, bootstrap, createApp, del, di, engine, get, head, loadEnv, middleware, options, parseEnv, patch, post, put, service, ws };

@@ -5,6 +5,8 @@ coverage/
 .DS_Store
 .env
 .env.local
+# ...except the ones the .env loader tests boot against.
+!test/fixtures/**/.env*
 
 # Clove-generated
 .clove/

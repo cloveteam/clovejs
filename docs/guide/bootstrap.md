@@ -32,6 +32,79 @@ Every [`AppOptions`](/reference/configuration) field is accepted, plus:
 | `host` | `HOST` env, else `localhost` | Interface to bind. Use `0.0.0.0` in a container |
 | `handleSignals` | `true` | Register `SIGINT`/`SIGTERM` handlers for graceful shutdown |
 
+## Environment variables
+
+Clove loads `.env` files on startup, before any of your files are evaluated —
+so a service or `di/` value can read `process.env` at module scope and see the
+value:
+
+```bash
+# .env
+DATABASE_URL=postgres://localhost/app
+CLOVE_SECRET=dev-only-secret
+```
+
+```ts
+// src/di/config.ts
+import { di } from "clovejs"
+
+export default di({
+  lifetime: "singleton",
+  value: { databaseUrl: process.env.DATABASE_URL },
+})
+```
+
+No dependency and no import are needed; this happens inside `bootstrap()`,
+`engine()`, `createApp()` and `clove dev` alike.
+
+### Which files are read
+
+Four files are consulted, and the first one to define a key wins:
+
+| Order | File | Purpose |
+| --- | --- | --- |
+| 1 | `.env.[NODE_ENV].local` | Machine-specific overrides for one mode. Never commit |
+| 2 | `.env.[NODE_ENV]` | Per-mode defaults, e.g. `.env.production` |
+| 3 | `.env.local` | Machine-specific overrides. Never commit |
+| 4 | `.env` | Shared defaults. Safe to commit when it holds no secrets |
+
+Keys are merged across files rather than the search stopping at the first
+file — a key set only in `.env` still applies when `.env.production` exists.
+
+`.local` files are skipped when `NODE_ENV=test`, so a test run does not depend
+on one developer's machine.
+
+::: warning The real environment always wins
+A variable already present in `process.env` is never overwritten by a file. An
+exported shell variable, a value injected by your host, or a secret from your
+orchestrator takes precedence over anything committed to the repo — which is
+what makes it safe to keep a `.env` of development defaults in version control.
+:::
+
+### Syntax
+
+```bash
+# Comments and blank lines are ignored.
+PLAIN=value                  # trailing comments too
+QUOTED="value with #hash"    # quotes preserve spaces and #
+SINGLE='no \n escapes here'  # single quotes are literal
+ESCAPED="line one\nline two" # double quotes expand \n \r \t \b \f
+MULTILINE="spans
+several lines"
+export PREFIXED=works        # a leading `export` is allowed
+EMPTY=                       # an empty string
+```
+
+### Controlling it
+
+```ts
+await bootstrap({ env: false })                    // load nothing
+await bootstrap({ env: [".env.shared", ".env"] })  // an explicit list
+```
+
+An explicit list replaces the cascade and keeps the same precedence: earlier
+files win, and the real environment beats them all.
+
 ## What you get back
 
 ```ts
@@ -86,13 +159,15 @@ harness — owns the lifecycle.
 
 ## Startup order
 
-1. Scan the source directory; validate conventions. A violation throws
+1. Load `.env` files into `process.env`.
+2. Scan the source directory; validate conventions. A violation throws
    [`CloveBootError`](/guide/errors#boot-errors) here, before anything starts.
-2. Build the registry and the router.
-3. Resolve **all** singleton services and `di/` values.
-4. Start listening.
+3. Build the registry and the router.
+4. Resolve **all** singleton services and `di/` values.
+5. Start listening.
 
-Because step 3 completes before step 4, no request can observe a
+Step 1 comes first, so every module the scanner evaluates already sees its
+environment. Because step 4 completes before step 5, no request can observe a
 half-initialised container — which is why `ctx.db` is safe to read
 synchronously in a handler.
 

@@ -275,6 +275,74 @@ function createLogger(level = "info") {
   };
 }
 
+// src/env.ts
+import { readFileSync } from "fs";
+import { join } from "path";
+function candidates(mode) {
+  const files = [".env.local", ".env"];
+  if (mode) files.unshift(`.env.${mode}.local`, `.env.${mode}`);
+  return mode === "test" ? files.filter((f) => !f.endsWith(".local")) : files;
+}
+function loadEnv(options2) {
+  const mode = options2.mode ?? process.env.NODE_ENV ?? "";
+  const files = options2.files ?? candidates(mode);
+  const applied = [];
+  for (const file of files) {
+    const contents = read(join(options2.rootDir, file));
+    if (contents === null) continue;
+    for (const [key, value] of Object.entries(parseEnv(contents))) {
+      if (key in process.env) continue;
+      process.env[key] = value;
+      applied.push(key);
+    }
+  }
+  return applied;
+}
+function read(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT" || code === "EISDIR") return null;
+    throw err;
+  }
+}
+var LINE = /^\s*(?:export\s+)?([\w.-]+)\s*(?::=|[:=])\s*(?:"((?:\\.|[^"])*)"|'([^']*)'|`([^`]*)`|([^#\r\n]*?))\s*(?:#.*)?$/;
+function parseEnv(contents) {
+  const out = {};
+  const lines = contents.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const open = /^\s*(?:export\s+)?[\w.-]+\s*(?::=|[:=])\s*"(?:\\.|[^"\\])*$/;
+    while (open.test(line) && i + 1 < lines.length) line += "\n" + lines[++i];
+    const match = LINE.exec(line);
+    if (!match) continue;
+    const [, key, double, single, backtick, bare] = match;
+    if (double !== void 0) out[key] = unescape(double);
+    else out[key] = single ?? backtick ?? bare ?? "";
+  }
+  return out;
+}
+function unescape(value) {
+  return value.replace(/\\([\\nrtbf"'`$])/g, (_, ch) => {
+    switch (ch) {
+      case "n":
+        return "\n";
+      case "r":
+        return "\r";
+      case "t":
+        return "	";
+      case "b":
+        return "\b";
+      case "f":
+        return "\f";
+      default:
+        return ch;
+    }
+  });
+}
+
 // src/http/body.ts
 var DEFAULT_BODY_LIMIT = 1024 * 1024;
 async function readRawBody(req, limit = DEFAULT_BODY_LIMIT) {
@@ -642,7 +710,7 @@ function writeError(err, res, options2) {
 
 // src/scanner/index.ts
 import { existsSync } from "fs";
-import { join } from "path";
+import { join as join2 } from "path";
 
 // src/container/registry.ts
 var Registry = class {
@@ -1030,7 +1098,7 @@ async function scanProject(options2) {
   const socketHandlers = /* @__PURE__ */ new Map();
   const middlewares = [];
   for (const kind of ["services", "di"]) {
-    const dir = join(sourceDir, dirs[kind]);
+    const dir = join2(sourceDir, dirs[kind]);
     for (const file of await walkDir(dir)) {
       files.push(file.absolute);
       const def = await loadDefault(loader, file.absolute);
@@ -1076,7 +1144,7 @@ async function scanProject(options2) {
       }
     }
   }
-  const apiDir = join(sourceDir, dirs.api);
+  const apiDir = join2(sourceDir, dirs.api);
   for (const file of await walkDir(apiDir)) {
     files.push(file.absolute);
     const def = await loadDefault(loader, file.absolute);
@@ -1096,14 +1164,14 @@ async function scanProject(options2) {
     }
     const registered = {
       method: route2.method,
-      path: join("/", dirs.api, derived.path).split("\\").join("/"),
+      path: join2("/", dirs.api, derived.path).split("\\").join("/"),
       handler: route2.handler,
       meta: Object.freeze({ ...route2[META] }),
       file: file.absolute
     };
     routes.add(registered);
   }
-  const wsDir = join(sourceDir, dirs.ws);
+  const wsDir = join2(sourceDir, dirs.ws);
   for (const file of await walkDir(wsDir)) {
     files.push(file.absolute);
     const def = await loadDefault(loader, file.absolute);
@@ -1113,7 +1181,7 @@ async function scanProject(options2) {
         [file.absolute]
       );
     }
-    const path = join("/", dirs.ws, deriveSocketPath(file.relative)).split("\\").join("/");
+    const path = join2("/", dirs.ws, deriveSocketPath(file.relative)).split("\\").join("/");
     const socket = {
       path,
       handler: def.handler,
@@ -1131,7 +1199,7 @@ async function scanProject(options2) {
   const mcp = { tools: [], resources: [], prompts: [] };
   const mcpNames = /* @__PURE__ */ new Map();
   for (const [sub, expected] of Object.entries(MCP_KINDS)) {
-    const dir = join(sourceDir, dirs.mcp, sub);
+    const dir = join2(sourceDir, dirs.mcp, sub);
     for (const file of await walkDir(dir)) {
       files.push(file.absolute);
       const def = await loadDefault(loader, file.absolute);
@@ -1189,7 +1257,7 @@ async function scanProject(options2) {
       }
     }
   }
-  const mwDir = join(sourceDir, dirs.middlewares);
+  const mwDir = join2(sourceDir, dirs.middlewares);
   for (const file of await walkDir(mwDir)) {
     files.push(file.absolute);
     const def = await loadDefault(loader, file.absolute);
@@ -1227,7 +1295,7 @@ function singular(sub) {
   return sub.endsWith("s") ? sub.slice(0, -1) : sub;
 }
 function resolveSourceDir(rootDir) {
-  const src = join(rootDir, "src");
+  const src = join2(rootDir, "src");
   if (existsSync(src)) return src;
   return rootDir;
 }
@@ -1645,9 +1713,16 @@ var CloveApp = class {
 };
 async function createApp(options2 = {}) {
   const rootDir = options2.rootDir ?? process.cwd();
+  const loadedEnv = options2.env === false ? [] : loadEnv({
+    rootDir,
+    ...Array.isArray(options2.env) ? { files: options2.env } : {}
+  });
   const sourceDir = options2.sourceDir ?? resolveSourceDir(rootDir);
   const isDev = process.env.NODE_ENV !== "production";
   const logger = createLogger(options2.logLevel ?? (isDev ? "debug" : "info"));
+  if (loadedEnv.length > 0) {
+    logger.debug(`Loaded ${loadedEnv.length} variable(s) from .env: ${loadedEnv.join(", ")}`);
+  }
   const loader = await createLoader(rootDir, {
     moduleCache: options2.moduleCache ?? true
   });
@@ -1781,8 +1856,10 @@ export {
   get,
   head,
   isHttpError,
+  loadEnv,
   middleware,
   options,
+  parseEnv,
   patch,
   post,
   put,
