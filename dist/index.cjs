@@ -708,6 +708,7 @@ var CloveResponse = class {
 };
 
 // src/mcp/runtime.ts
+var import_node_async_hooks = require("async_hooks");
 var import_node_crypto2 = require("crypto");
 
 // src/mcp/content.ts
@@ -858,9 +859,9 @@ function deriveMcpName(relativePath) {
 function deriveResourceUri(relativePath) {
   const segments = stripExtension(relativePath).split("/").filter(Boolean);
   if (segments[segments.length - 1] === "index" && segments.length > 1) segments.pop();
-  const [scheme, ...rest] = segments;
-  if (!scheme) return "";
-  return `${templateSegment(scheme)}://${rest.map(templateSegment).join("/")}`;
+  const [scheme2, ...rest] = segments;
+  if (!scheme2) return "";
+  return `${templateSegment(scheme2)}://${rest.map(templateSegment).join("/")}`;
 }
 function templateSegment(segment) {
   const match = /^\[\.{0,3}(.+)\]$/.exec(segment);
@@ -872,6 +873,7 @@ function isUriTemplate(uri) {
 
 // src/mcp/runtime.ts
 var MCP_SESSION_HEADER = "mcp-session-id";
+var OAUTH_METADATA_PATH = "/.well-known/oauth-protected-resource";
 var McpRuntime = class {
   path;
   #options;
@@ -879,6 +881,12 @@ var McpRuntime = class {
   #live = /* @__PURE__ */ new Map();
   /** The single connection used by stdio, which has no session ids. */
   #standalone = null;
+  /**
+   * Carries the request's principal from `handle()` into `#call`, without
+   * threading it through the MCP SDK. Async-local so concurrent requests on
+   * one session never read each other's identity.
+   */
+  #authStore = new import_node_async_hooks.AsyncLocalStorage();
   constructor(options2) {
     this.#options = { exposeErrors: false, ...options2 };
     this.path = options2.path ?? "/mcp";
@@ -891,15 +899,38 @@ var McpRuntime = class {
     const { tools, resources, prompts } = this.#options.scan;
     return { tools: tools.length, resources: resources.length, prompts: prompts.length };
   }
+  /** True when this server enforces bearer-token authentication. */
+  get secured() {
+    return this.#options.auth != null;
+  }
+  /**
+   * True when the path is one this runtime answers: the MCP endpoint itself,
+   * or — when auth is configured — its protected-resource metadata. Lets the
+   * host route those paths here and fall through to routes for everything else.
+   */
+  owns(path) {
+    if (this.empty) return false;
+    if (path === this.path) return true;
+    return this.secured && isMetadataPath(path);
+  }
   /**
    * Handles one MCP HTTP request. Returns false when the path does not match,
    * so the caller can fall through to routes.
    */
   async handle(req, res, body) {
     if (this.empty) return false;
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? "/", `${scheme(req)}://${req.headers.host ?? "localhost"}`);
+    if (this.secured && isMetadataPath(url.pathname)) {
+      this.#serveMetadata(res, url);
+      return true;
+    }
     if (url.pathname !== this.path) return false;
     const sdk = await this.#load();
+    let authInfo = null;
+    if (this.#options.auth) {
+      authInfo = await this.#authenticate(req, res, url);
+      if (!authInfo) return true;
+    }
     const existingId = headerValue(req, MCP_SESSION_HEADER);
     if (existingId) {
       const live2 = this.#live.get(existingId);
@@ -908,7 +939,11 @@ var McpRuntime = class {
         return true;
       }
       await live2.ready;
-      await live2.transport.handleRequest(req, res, body);
+      if (live2.auth && authInfo && live2.auth.tenant !== authInfo.tenant) {
+        writeJsonRpcError(res, 403, -32003, "This MCP session belongs to another tenant");
+        return true;
+      }
+      await this.#authStore.run(authInfo, () => live2.transport.handleRequest(req, res, body));
       await this.#persist(live2);
       return true;
     }
@@ -938,6 +973,7 @@ var McpRuntime = class {
       transport,
       parent: this.#options.root,
       sessionId: null,
+      auth: authInfo,
       ready: Promise.resolve()
     };
     transport.onclose = () => {
@@ -945,7 +981,7 @@ var McpRuntime = class {
       if (id) void this.#closeSession(id);
     };
     await live.server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await this.#authStore.run(authInfo, () => transport.handleRequest(req, res, body));
     await live.ready;
     await this.#persist(live);
     return true;
@@ -962,6 +998,7 @@ var McpRuntime = class {
       transport,
       parent: this.#options.root,
       sessionId: null,
+      auth: null,
       ready: Promise.resolve()
     };
     this.#standalone = live;
@@ -1054,6 +1091,7 @@ var McpRuntime = class {
     const args = {
       ctx: container.ctx,
       sessionId: typeof extra?.sessionId === "string" ? extra.sessionId : null,
+      auth: this.#authStore.getStore() ?? null,
       signal: extra?.signal ?? new AbortController().signal,
       log: (level, message) => {
         void extra?.sendNotification?.({
@@ -1076,6 +1114,72 @@ var McpRuntime = class {
   #reportInternal(err, file) {
     this.#options.logger.error(`MCP handler failed (${file}):`, err);
     return this.#options.exposeErrors && err instanceof Error ? `Internal error: ${err.message}` : "Internal error";
+  }
+  /**
+   * Runs the project's `authenticate` handler for one request. Returns the
+   * principal on success, or null after writing a rejection response.
+   *
+   * A 4xx thrown by the handler is the caller's problem — a missing or invalid
+   * token — and is turned into that status, with a `WWW-Authenticate`
+   * challenge on a 401 so the client knows where to get a token. Anything else
+   * is ours: logged in full, reported as a generic 500.
+   */
+  async #authenticate(req, res, url) {
+    const token = bearerToken(req);
+    try {
+      return await this.#options.auth.authenticate({
+        ctx: this.#options.root.ctx,
+        req,
+        token,
+        resource: `${url.origin}${this.path}`
+      });
+    } catch (err) {
+      if (!isHttpError(err)) {
+        this.#reportInternal(err, this.#options.auth.file ?? "mcp/auth");
+        writeJsonRpcError(res, 500, -32603, "Internal error");
+        return null;
+      }
+      const status = err.status;
+      const message = errorText(err);
+      if (status === 401) {
+        this.#challenge(res, url, "invalid_token", message);
+      } else {
+        writeJsonRpcError(res, status, -32003, message);
+      }
+      return null;
+    }
+  }
+  /** Answers a request that lacks a usable token with an RFC 6750 challenge. */
+  #challenge(res, url, code, description) {
+    const metadata = `${url.origin}${OAUTH_METADATA_PATH}${this.path}`;
+    const params = [
+      `resource_metadata="${metadata}"`,
+      `error="${code}"`,
+      `error_description="${description.replace(/"/g, "'")}"`
+    ].join(", ");
+    res.writeHead(401, {
+      "content-type": "application/json",
+      "www-authenticate": `Bearer ${params}`
+    });
+    res.end(JSON.stringify({ error: code, error_description: description }));
+  }
+  /** Serves the RFC 9728 protected-resource metadata document. */
+  #serveMetadata(res, url) {
+    const { metadata } = this.#options.auth;
+    const { authorizationServers, scopesSupported, resourceName, ...rest } = metadata;
+    const body = {
+      resource: `${url.origin}${this.path}`,
+      authorization_servers: authorizationServers,
+      ...scopesSupported ? { scopes_supported: scopesSupported } : {},
+      ...resourceName ? { resource_name: resourceName } : {},
+      bearer_methods_supported: ["header"],
+      ...rest
+    };
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "cache-control": "public, max-age=3600"
+    });
+    res.end(JSON.stringify(body));
   }
   async #persist(live) {
     if (!live.sessionId) return;
@@ -1152,6 +1256,19 @@ function stringParams(variables) {
 function headerValue(req, name) {
   const raw = req.headers[name];
   return Array.isArray(raw) ? raw[0] : raw;
+}
+function bearerToken(req) {
+  const header = headerValue(req, "authorization");
+  const match = header?.match(/^Bearer[ ]+(.+)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+function isMetadataPath(path) {
+  return path === OAUTH_METADATA_PATH || path.startsWith(`${OAUTH_METADATA_PATH}/`);
+}
+function scheme(req) {
+  const forwarded = headerValue(req, "x-forwarded-proto")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded;
+  return req.socket.encrypted ? "https" : "http";
 }
 function writeJsonRpcError(res, status, code, message) {
   res.writeHead(status, { "content-type": "application/json" });
@@ -1734,8 +1851,23 @@ async function scanProject(options2) {
     });
     socketHandlers.set(path, socket);
   }
-  const mcp = { tools: [], resources: [], prompts: [] };
+  const mcp = { tools: [], resources: [], prompts: [], auth: null };
   const mcpNames = /* @__PURE__ */ new Map();
+  for (const ext of ["ts", "js", "mjs", "cjs"]) {
+    const authFile = (0, import_node_path3.join)(sourceDir, dirs.mcp, `auth.${ext}`);
+    if (!(0, import_node_fs2.existsSync)(authFile)) continue;
+    files.push(authFile);
+    const def = await loadDefault(loader, authFile);
+    if (definitionKind(def) !== "mcpAuth") {
+      throw new CloveBootError(
+        `${dirs.mcp}/auth.${ext} must default-export mcpAuth(...), but it exports ${describe(definitionKind(def))}.`,
+        [authFile]
+      );
+    }
+    const d = def;
+    mcp.auth = { metadata: d.metadata, authenticate: d.authenticate, file: authFile };
+    break;
+  }
   for (const [sub, expected] of Object.entries(MCP_KINDS)) {
     const dir = (0, import_node_path3.join)(sourceDir, dirs.mcp, sub);
     for (const file of await walkDir(dir)) {
@@ -2150,7 +2282,7 @@ var CloveApp = class {
   async handle(rawReq, rawRes) {
     const req = new CloveRequest(rawReq, this.#options.bodyLimit);
     const res = new CloveResponse(rawRes);
-    if (!this.mcp.empty && req.path === this.mcp.path) {
+    if (this.mcp.owns(req.path)) {
       const body = req.method === "POST" ? await req.readBody() : void 0;
       try {
         return await this.mcp.handle(rawReq, rawRes, body);
@@ -2302,6 +2434,7 @@ async function createApp(options2 = {}) {
     sessions,
     ...options2.mcpPath ? { path: options2.mcpPath } : {},
     ...options2.mcpServerInfo ? { serverInfo: options2.mcpServerInfo } : {},
+    ...scan.mcp.auth ? { auth: scan.mcp.auth } : {},
     exposeErrors: options2.exposeErrors ?? isDev
   });
   return new CloveApp(scan, root, logger, sessions, ws2, mcp, {

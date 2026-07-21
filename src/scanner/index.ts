@@ -5,6 +5,7 @@ import { CloveBootError } from "../errors.js"
 import { deriveMcpName, deriveResourceUri } from "../mcp/paths.js"
 import { assertPromptShape, toRawShape } from "../mcp/schema.js"
 import type {
+  McpAuthDefinition,
   McpPromptDefinition,
   McpResourceDefinition,
   McpScan,
@@ -218,8 +219,27 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   }
 
   // --- mcp/ ----------------------------------------------------------------
-  const mcp: McpScan = { tools: [], resources: [], prompts: [] }
+  const mcp: McpScan = { tools: [], resources: [], prompts: [], auth: null }
   const mcpNames = new Map<string, string>()
+
+  // `mcp/auth.ts` is a single file, not a subdirectory: it declares how the
+  // whole server authenticates callers, so there is exactly one per project.
+  for (const ext of ["ts", "js", "mjs", "cjs"]) {
+    const authFile = join(sourceDir, dirs.mcp, `auth.${ext}`)
+    if (!existsSync(authFile)) continue
+    files.push(authFile)
+    const def = await loadDefault(loader, authFile)
+    if (definitionKind(def) !== "mcpAuth") {
+      throw new CloveBootError(
+        `${dirs.mcp}/auth.${ext} must default-export mcpAuth(...), ` +
+          `but it exports ${describe(definitionKind(def))}.`,
+        [authFile],
+      )
+    }
+    const d = def as McpAuthDefinition
+    mcp.auth = { metadata: d.metadata, authenticate: d.authenticate, file: authFile }
+    break
+  }
 
   for (const [sub, expected] of Object.entries(MCP_KINDS) as Array<
     [keyof typeof MCP_KINDS, (typeof MCP_KINDS)[keyof typeof MCP_KINDS]]

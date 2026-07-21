@@ -1,0 +1,61 @@
+# CloveJS multi-tenant MCP example — HTTP requests
+#
+# Read natively by JetBrains IDEs (Run > HTTP Client) and VS Code's "REST
+# Client" extension (humao.rest-client). Click "Send Request" above a block, or
+# run them top to bottom — later blocks reuse tokens captured from earlier ones.
+#
+# Start the server first: npm run dev -w clovejs-example-multi-tenant-mcp
+#
+# The MCP protocol handshake (initialize -> tool calls, with an Mcp-Session-Id
+# and Server-Sent-Events responses) is best driven by a real MCP client. These
+# requests cover the OAuth half: discovery, rejection, and getting a token. See
+# the README for the client side.
+
+@baseUrl = http://localhost:3000
+
+### Unauthenticated MCP call — refused with a WWW-Authenticate challenge (401)
+POST {{baseUrl}}/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+  "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+              "clientInfo": { "name": "rest-client", "version": "1.0" } } }
+
+### Protected-resource metadata (RFC 9728) — where to get a token
+GET {{baseUrl}}/.well-known/oauth-protected-resource/mcp
+
+### The dev authorization server's public JWKS
+GET {{baseUrl}}/api/dev/jwks
+
+### Mint an acme token (read + write by default)
+# @name acmeToken
+POST {{baseUrl}}/api/dev/token
+Content-Type: application/json
+
+{ "tenant": "acme" }
+
+### Mint a read-only globex token
+# @name globexToken
+POST {{baseUrl}}/api/dev/token
+Content-Type: application/json
+
+{ "tenant": "globex", "scopes": ["notes:read"] }
+
+### Authenticated initialize as acme — accepted (200, Server-Sent-Events)
+# The response carries an Mcp-Session-Id header; a real client uses it for
+# follow-up tool calls on the same connection.
+POST {{baseUrl}}/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+Authorization: Bearer {{acmeToken.response.body.access_token}}
+
+{ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+  "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+              "clientInfo": { "name": "rest-client", "version": "1.0" } } }
+
+### An unknown tenant is rejected by the dev authorization server (400)
+POST {{baseUrl}}/api/dev/token
+Content-Type: application/json
+
+{ "tenant": "unknown" }

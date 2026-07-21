@@ -228,6 +228,7 @@ async handler(input, ctx, { sessionId, signal, log }) {
 | Field | What it is |
 | --- | --- |
 | `sessionId` | The MCP session id, or `null` over stdio |
+| `auth` | The authenticated principal, or `null` when no [`mcp/auth.ts`](#authentication) is defined |
 | `signal` | Aborts when the client cancels the call or disconnects |
 | `log(level, message)` | Sends a log message to the client |
 | `uri` | Resources only: the fully resolved URI that was requested |
@@ -257,9 +258,72 @@ message the client sees.
 ## Middlewares do not run
 
 HTTP middlewares wrap routes, not MCP calls: there is no `req`/`res` pair to
-give them, exactly as with [WebSocket](./websockets) upgrades. Authenticate and
-authorize inside the handler using `ctx`, or put shared logic in a service both
-call.
+give them, exactly as with [WebSocket](./websockets) upgrades. Authorize inside
+the handler using `ctx` and `auth`, or put shared logic in a service both call.
+For the token check itself, reach for `mcp/auth.ts` instead.
+
+## Authentication
+
+A single `mcp/auth.ts` turns the server into an OAuth 2.1 protected resource.
+Every request to the MCP endpoint must then carry a valid bearer token; the
+runtime rejects an unauthenticated one with `401` and a `WWW-Authenticate`
+header, and publishes protected-resource metadata (RFC 9728) at
+`/.well-known/oauth-protected-resource` so a client can discover where to get a
+token.
+
+```ts
+// mcp/auth.ts
+import { mcpAuth, error } from "clovejs/mcp"
+
+export default mcpAuth({
+  metadata: {
+    authorizationServers: ["https://auth.example.com"],
+    scopesSupported: ["notes:read", "notes:write"],
+  },
+  async authenticate({ ctx, token, resource }) {
+    if (!token) throw error(401, { message: "Bearer token required" })
+    const claims = await ctx.keys.verify(token)   // your verifier, via ctx
+    return {
+      subject: claims.sub,
+      tenant: claims.org,        // scopes the session; see below
+      scopes: (claims.scope ?? "").split(" ").filter(Boolean),
+      claims,
+      token,
+    }
+  },
+})
+```
+
+`authenticate` receives the root `ctx` (so it can reach singleton services like
+a JWKS verifier), the raw `req`, the bearer `token`, and the absolute `resource`
+URL to check as the token audience. Throw `error(401, …)` for a missing or
+invalid token — the runtime turns it into the challenge above — or `error(403,
+…)` for a valid token that lacks access.
+
+The principal it returns is handed to every tool, resource and prompt as
+`auth`:
+
+```ts
+async handler(input, ctx, { auth }) {
+  if (!auth.scopes.includes("notes:write")) {
+    throw error(403, { message: "Needs the notes:write scope" })
+  }
+  return ctx.notes.create(auth.tenant, input)
+}
+```
+
+### Multi-tenancy
+
+The `tenant` field is special: the runtime **binds each MCP session to the
+tenant that opened it**, and refuses a later request whose token names a
+different tenant with a `403`. So one connection can only ever touch one
+tenant's data — scope your services by `auth.tenant` and the boundary holds.
+
+The [`multi-tenant-mcp`
+example](https://github.com/cloveteam/clovejs/tree/main/examples/multi-tenant-mcp)
+is a complete, runnable server: RS256/JWKS verification, per-tenant isolation,
+scope enforcement, and a built-in dev authorization server so it runs with no
+external services.
 
 ## Inspecting the surface
 

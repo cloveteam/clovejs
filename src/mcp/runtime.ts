@@ -1,14 +1,18 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { randomUUID } from "node:crypto"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { Container } from "../container/container.js"
 import type { Logger } from "../container/logger.js"
-import { CloveBootError } from "../errors.js"
+import { CloveBootError, isHttpError } from "../errors.js"
 import type { SessionManager } from "../session/index.js"
 import { errorText, isRecoverable, toPromptMessages, toResourceContents, toToolContent } from "./content.js"
 import { isUriTemplate } from "./paths.js"
-import type { McpScan, McpToolArgs } from "./types.js"
+import type { McpAuth, McpAuthInfo, McpScan, McpToolArgs } from "./types.js"
 
 export const MCP_SESSION_HEADER = "mcp-session-id"
+
+/** Base path of the RFC 9728 protected-resource metadata endpoint. */
+export const OAUTH_METADATA_PATH = "/.well-known/oauth-protected-resource"
 
 export interface McpRuntimeOptions {
   scan: McpScan
@@ -21,6 +25,13 @@ export interface McpRuntimeOptions {
   serverInfo?: { name: string; version: string }
   /** Include the underlying message when a handler fails unexpectedly. */
   exposeErrors?: boolean
+  /**
+   * How the server authenticates callers, from `mcp/auth.ts`. When set, every
+   * request to the endpoint must carry a valid bearer token, the principal is
+   * exposed to handlers as `args.auth`, and a session is bound to the tenant
+   * that opened it.
+   */
+  auth?: McpAuth
 }
 
 /** The slice of the MCP SDK this runtime uses, resolved lazily. */
@@ -38,6 +49,8 @@ interface Live {
   parent: Container
   /** Set when `parent` is a session container that needs persisting. */
   sessionId: string | null
+  /** The principal that opened this session, bound at initialization. */
+  auth: McpAuthInfo | null
   /** Resolves once `parent` holds the session container for this connection. */
   ready: Promise<void>
 }
@@ -57,6 +70,12 @@ export class McpRuntime {
   #live = new Map<string, Live>()
   /** The single connection used by stdio, which has no session ids. */
   #standalone: Live | null = null
+  /**
+   * Carries the request's principal from `handle()` into `#call`, without
+   * threading it through the MCP SDK. Async-local so concurrent requests on
+   * one session never read each other's identity.
+   */
+  #authStore = new AsyncLocalStorage<McpAuthInfo | null>()
 
   constructor(options: McpRuntimeOptions) {
     this.#options = { exposeErrors: false, ...options }
@@ -73,16 +92,49 @@ export class McpRuntime {
     return { tools: tools.length, resources: resources.length, prompts: prompts.length }
   }
 
+  /** True when this server enforces bearer-token authentication. */
+  get secured(): boolean {
+    return this.#options.auth != null
+  }
+
+  /**
+   * True when the path is one this runtime answers: the MCP endpoint itself,
+   * or — when auth is configured — its protected-resource metadata. Lets the
+   * host route those paths here and fall through to routes for everything else.
+   */
+  owns(path: string): boolean {
+    if (this.empty) return false
+    if (path === this.path) return true
+    return this.secured && isMetadataPath(path)
+  }
+
   /**
    * Handles one MCP HTTP request. Returns false when the path does not match,
    * so the caller can fall through to routes.
    */
   async handle(req: IncomingMessage, res: ServerResponse, body: unknown): Promise<boolean> {
     if (this.empty) return false
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`)
+    const url = new URL(req.url ?? "/", `${scheme(req)}://${req.headers.host ?? "localhost"}`)
+
+    // Discovery: `/.well-known/oauth-protected-resource` is public, so it is
+    // answered before the token check that guards everything else.
+    if (this.secured && isMetadataPath(url.pathname)) {
+      this.#serveMetadata(res, url)
+      return true
+    }
+
     if (url.pathname !== this.path) return false
 
     const sdk = await this.#load()
+
+    // Authenticate before touching the transport. A rejection writes its own
+    // 401/403 response, so we simply stop.
+    let authInfo: McpAuthInfo | null = null
+    if (this.#options.auth) {
+      authInfo = await this.#authenticate(req, res, url)
+      if (!authInfo) return true
+    }
+
     const existingId = headerValue(req, MCP_SESSION_HEADER)
 
     if (existingId) {
@@ -92,7 +144,13 @@ export class McpRuntime {
         return true
       }
       await live.ready
-      await live.transport.handleRequest(req, res, body)
+      // A session belongs to the tenant that opened it. A token for a
+      // different tenant must not ride an existing connection.
+      if (live.auth && authInfo && live.auth.tenant !== authInfo.tenant) {
+        writeJsonRpcError(res, 403, -32003, "This MCP session belongs to another tenant")
+        return true
+      }
+      await this.#authStore.run(authInfo, () => live.transport.handleRequest(req, res, body))
       await this.#persist(live)
       return true
     }
@@ -134,6 +192,7 @@ export class McpRuntime {
       transport,
       parent: this.#options.root,
       sessionId: null,
+      auth: authInfo,
       ready: Promise.resolve(),
     }
 
@@ -143,7 +202,7 @@ export class McpRuntime {
     }
 
     await live.server.connect(transport)
-    await transport.handleRequest(req, res, body)
+    await this.#authStore.run(authInfo, () => transport.handleRequest(req, res, body))
     await live.ready
     await this.#persist(live)
     return true
@@ -161,6 +220,7 @@ export class McpRuntime {
       transport,
       parent: this.#options.root,
       sessionId: null,
+      auth: null,
       ready: Promise.resolve(),
     }
     this.#standalone = live
@@ -278,6 +338,7 @@ export class McpRuntime {
     const args: McpToolArgs = {
       ctx: container.ctx,
       sessionId: typeof extra?.sessionId === "string" ? extra.sessionId : null,
+      auth: this.#authStore.getStore() ?? null,
       signal: extra?.signal ?? new AbortController().signal,
       log: (level, message) => {
         void extra?.sendNotification?.({
@@ -311,6 +372,79 @@ export class McpRuntime {
     return this.#options.exposeErrors && err instanceof Error
       ? `Internal error: ${err.message}`
       : "Internal error"
+  }
+
+  /**
+   * Runs the project's `authenticate` handler for one request. Returns the
+   * principal on success, or null after writing a rejection response.
+   *
+   * A 4xx thrown by the handler is the caller's problem — a missing or invalid
+   * token — and is turned into that status, with a `WWW-Authenticate`
+   * challenge on a 401 so the client knows where to get a token. Anything else
+   * is ours: logged in full, reported as a generic 500.
+   */
+  async #authenticate(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<McpAuthInfo | null> {
+    const token = bearerToken(req)
+    try {
+      return await this.#options.auth!.authenticate({
+        ctx: this.#options.root.ctx,
+        req,
+        token,
+        resource: `${url.origin}${this.path}`,
+      })
+    } catch (err) {
+      if (!isHttpError(err)) {
+        this.#reportInternal(err, this.#options.auth!.file ?? "mcp/auth")
+        writeJsonRpcError(res, 500, -32603, "Internal error")
+        return null
+      }
+      const status = err.status
+      const message = errorText(err)
+      if (status === 401) {
+        this.#challenge(res, url, "invalid_token", message)
+      } else {
+        writeJsonRpcError(res, status, -32003, message)
+      }
+      return null
+    }
+  }
+
+  /** Answers a request that lacks a usable token with an RFC 6750 challenge. */
+  #challenge(res: ServerResponse, url: URL, code: string, description: string): void {
+    const metadata = `${url.origin}${OAUTH_METADATA_PATH}${this.path}`
+    const params = [
+      `resource_metadata="${metadata}"`,
+      `error="${code}"`,
+      `error_description="${description.replace(/"/g, "'")}"`,
+    ].join(", ")
+    res.writeHead(401, {
+      "content-type": "application/json",
+      "www-authenticate": `Bearer ${params}`,
+    })
+    res.end(JSON.stringify({ error: code, error_description: description }))
+  }
+
+  /** Serves the RFC 9728 protected-resource metadata document. */
+  #serveMetadata(res: ServerResponse, url: URL): void {
+    const { metadata } = this.#options.auth!
+    const { authorizationServers, scopesSupported, resourceName, ...rest } = metadata
+    const body = {
+      resource: `${url.origin}${this.path}`,
+      authorization_servers: authorizationServers,
+      ...(scopesSupported ? { scopes_supported: scopesSupported } : {}),
+      ...(resourceName ? { resource_name: resourceName } : {}),
+      bearer_methods_supported: ["header"],
+      ...rest,
+    }
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "cache-control": "public, max-age=3600",
+    })
+    res.end(JSON.stringify(body))
   }
 
   async #persist(live: Live): Promise<void> {
@@ -396,6 +530,29 @@ function stringParams(variables: Record<string, unknown>): Record<string, string
 function headerValue(req: IncomingMessage, name: string): string | undefined {
   const raw = req.headers[name]
   return Array.isArray(raw) ? raw[0] : raw
+}
+
+/** The bearer token from the `Authorization` header, or null. */
+function bearerToken(req: IncomingMessage): string | null {
+  const header = headerValue(req, "authorization")
+  const match = header?.match(/^Bearer[ ]+(.+)$/i)
+  return match?.[1]?.trim() ?? null
+}
+
+/**
+ * True for the protected-resource metadata endpoint. Both the bare path and
+ * its path-suffixed form (`.../oauth-protected-resource/mcp`) are recognised,
+ * since clients derive the latter from a resource that has a path.
+ */
+function isMetadataPath(path: string): boolean {
+  return path === OAUTH_METADATA_PATH || path.startsWith(`${OAUTH_METADATA_PATH}/`)
+}
+
+/** The request scheme, honouring a terminating proxy's `x-forwarded-proto`. */
+function scheme(req: IncomingMessage): string {
+  const forwarded = headerValue(req, "x-forwarded-proto")?.split(",")[0]?.trim()
+  if (forwarded) return forwarded
+  return (req.socket as { encrypted?: boolean }).encrypted ? "https" : "http"
 }
 
 function writeJsonRpcError(

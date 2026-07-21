@@ -99,7 +99,7 @@ export class CloveApp {
     // MCP owns its endpoint outright: it speaks JSON-RPC over its own
     // transport, so it runs before route matching and outside the middleware
     // chain, the same way WebSocket upgrades bypass both.
-    if (!this.mcp.empty && req.path === this.mcp.path) {
+    if (this.mcp.owns(req.path)) {
       const body = req.method === "POST" ? await req.readBody() : undefined
       try {
         return await this.mcp.handle(rawReq, rawRes, body)
@@ -308,6 +308,7 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     sessions,
     ...(options.mcpPath ? { path: options.mcpPath } : {}),
     ...(options.mcpServerInfo ? { serverInfo: options.mcpServerInfo } : {}),
+    ...(scan.mcp.auth ? { auth: scan.mcp.auth } : {}),
     exposeErrors: options.exposeErrors ?? isDev,
   })
 

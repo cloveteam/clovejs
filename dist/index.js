@@ -11,7 +11,7 @@ import {
   isHttpError,
   stripExtension,
   walkDir
-} from "./chunk-5XFZXUX4.js";
+} from "./chunk-H73KQ3IP.js";
 
 // src/definitions.ts
 function route(method, handler) {
@@ -1196,8 +1196,23 @@ async function scanProject(options2) {
     });
     socketHandlers.set(path, socket);
   }
-  const mcp = { tools: [], resources: [], prompts: [] };
+  const mcp = { tools: [], resources: [], prompts: [], auth: null };
   const mcpNames = /* @__PURE__ */ new Map();
+  for (const ext of ["ts", "js", "mjs", "cjs"]) {
+    const authFile = join2(sourceDir, dirs.mcp, `auth.${ext}`);
+    if (!existsSync(authFile)) continue;
+    files.push(authFile);
+    const def = await loadDefault(loader, authFile);
+    if (definitionKind(def) !== "mcpAuth") {
+      throw new CloveBootError(
+        `${dirs.mcp}/auth.${ext} must default-export mcpAuth(...), but it exports ${describe(definitionKind(def))}.`,
+        [authFile]
+      );
+    }
+    const d = def;
+    mcp.auth = { metadata: d.metadata, authenticate: d.authenticate, file: authFile };
+    break;
+  }
   for (const [sub, expected] of Object.entries(MCP_KINDS)) {
     const dir = join2(sourceDir, dirs.mcp, sub);
     for (const file of await walkDir(dir)) {
@@ -1612,7 +1627,7 @@ var CloveApp = class {
   async handle(rawReq, rawRes) {
     const req = new CloveRequest(rawReq, this.#options.bodyLimit);
     const res = new CloveResponse(rawRes);
-    if (!this.mcp.empty && req.path === this.mcp.path) {
+    if (this.mcp.owns(req.path)) {
       const body = req.method === "POST" ? await req.readBody() : void 0;
       try {
         return await this.mcp.handle(rawReq, rawRes, body);
@@ -1764,6 +1779,7 @@ async function createApp(options2 = {}) {
     sessions,
     ...options2.mcpPath ? { path: options2.mcpPath } : {},
     ...options2.mcpServerInfo ? { serverInfo: options2.mcpServerInfo } : {},
+    ...scan.mcp.auth ? { auth: scan.mcp.auth } : {},
     exposeErrors: options2.exposeErrors ?? isDev
   });
   return new CloveApp(scan, root, logger, sessions, ws2, mcp, {

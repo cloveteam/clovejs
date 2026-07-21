@@ -1,6 +1,8 @@
 import { KIND, META } from "../types.js"
 import type {
   InputSchema,
+  McpAuthDefinition,
+  McpAuthSpec,
   McpPromptDefinition,
   McpPromptSpec,
   McpResourceDefinition,
@@ -64,6 +66,36 @@ export function resource<Result = unknown>(
     title: spec.title ?? null,
     mimeType: spec.mimeType ?? null,
     handler: spec.handler as McpResourceDefinition["handler"],
+  }
+}
+
+/**
+ * Declares how this MCP server authenticates callers, turning it into an
+ * OAuth 2.1 protected resource. Lives in `mcp/auth.ts`, one per project.
+ *
+ * The runtime enforces it on every request to the MCP endpoint: an
+ * unauthenticated request is answered with `401` and a `WWW-Authenticate`
+ * header, and the `metadata` is published at
+ * `/.well-known/oauth-protected-resource` so a client can discover the
+ * authorization server. The principal `authenticate` returns is handed to
+ * every tool, resource and prompt as `args.auth`.
+ *
+ * ```ts
+ * export default mcpAuth({
+ *   metadata: { authorizationServers: ["https://auth.example.com"] },
+ *   async authenticate({ token, resource }) {
+ *     if (!token) throw error(401, { message: "Missing bearer token" })
+ *     const claims = await verify(token, { audience: resource })
+ *     return { subject: claims.sub, tenant: claims.org, scopes: [], claims, token }
+ *   },
+ * })
+ * ```
+ */
+export function mcpAuth(spec: McpAuthSpec): McpAuthDefinition {
+  return {
+    [KIND]: "mcpAuth",
+    metadata: spec.metadata,
+    authenticate: spec.authenticate,
   }
 }
 

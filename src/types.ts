@@ -27,6 +27,7 @@ export type DefinitionKind =
   | "mcpTool"
   | "mcpResource"
   | "mcpPrompt"
+  | "mcpAuth"
 
 export interface Definition<K extends DefinitionKind> {
   readonly [KIND]: K
@@ -152,6 +153,7 @@ export type AnyDefinition =
   | Definition<"mcpTool">
   | Definition<"mcpResource">
   | Definition<"mcpPrompt">
+  | Definition<"mcpAuth">
 
 export function isDefinition(value: unknown): value is AnyDefinition {
   return (

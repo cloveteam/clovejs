@@ -1,0 +1,20 @@
+{
+  "name": "clovejs-example-multi-tenant-mcp",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A multi-tenant MCP server over Streamable HTTP, guarded by OAuth 2.1 bearer tokens with per-tenant session isolation.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/main.js",
+    "routes": "clove routes",
+    "mcp": "clove mcp"
+  },
+  "dependencies": {
+    "clovejs": "file:../..",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "jose": "^6.0.0",
+    "zod": "^3.25.76"
+  }
+}

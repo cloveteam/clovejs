@@ -391,6 +391,31 @@ npx clove mcp                               # print the tools, resources and pro
 that launch a server as a subprocess, `npx clove mcp --stdio` serves the same
 project over stdio.
 
+An `mcp/auth.ts` file turns the server into an OAuth 2.1 protected resource.
+The runtime then enforces a bearer token on every request, answers an
+unauthenticated one with `401` and a `WWW-Authenticate` challenge, and
+publishes protected-resource metadata (RFC 9728) at
+`/.well-known/oauth-protected-resource`:
+
+```ts
+import { mcpAuth, error } from "clovejs/mcp"
+
+export default mcpAuth({
+  metadata: { authorizationServers: ["https://auth.example.com"] },
+  async authenticate({ ctx, token, resource }) {
+    if (!token) throw error(401, { message: "Bearer token required" })
+    const claims = await ctx.keys.verify(token)       // your verifier, via DI
+    return { subject: claims.sub, tenant: claims.org, scopes: [], claims, token }
+  },
+})
+```
+
+The principal it returns reaches every tool, resource and prompt as `args.auth`,
+and the runtime binds each MCP session to the `tenant` it names — a token for
+another tenant cannot ride an existing connection. That is all a multi-tenant
+server needs; [`examples/multi-tenant-mcp`](./examples/multi-tenant-mcp) is a
+runnable one.
+
 ## Sessions
 
 Declaring any `session`-scoped value turns sessions on. Visitors are identified
@@ -429,13 +454,14 @@ route at a time.
 
 ## Examples
 
-Three runnable apps live in [`examples/`](./examples), one per surface:
+Four runnable apps live in [`examples/`](./examples):
 
 | Example | Covers |
 | --- | --- |
 | [`examples/rest`](./examples/rest) | Routes, route parameters, status-code rules, all three DI lifetimes, middleware ordering, sessions |
 | [`examples/mcp`](./examples/mcp) | An MCP server: tools, resources, prompts, session state across calls |
 | [`examples/websocket`](./examples/websocket) | Sockets, parameterised socket routes, broadcast, an HTTP → socket bridge |
+| [`examples/multi-tenant-mcp`](./examples/multi-tenant-mcp) | A multi-tenant MCP server: OAuth 2.1 bearer tokens, RFC 9728 discovery, per-tenant session isolation |
 
 Start with the REST one:
 

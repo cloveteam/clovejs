@@ -1,4 +1,4 @@
-export { prompt, resource, tool } from "./definitions.js"
+export { mcpAuth, prompt, resource, tool } from "./definitions.js"
 
 export { error, HttpError, isHttpError } from "../errors.js"
 
@@ -15,7 +15,14 @@ export type { McpRuntimeOptions } from "./runtime.js"
 export type {
   InferInput,
   InputSchema,
+  McpAuth,
+  McpAuthContext,
+  McpAuthDefinition,
+  McpAuthInfo,
+  McpAuthenticate,
+  McpAuthSpec,
   McpContent,
+  McpProtectedResourceMetadata,
   McpImageContent,
   McpPrompt,
   McpPromptDefinition,

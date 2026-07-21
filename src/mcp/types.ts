@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http"
 import { META, type Definition, type RuntimeCtx } from "../types.js"
 
 /**
@@ -70,6 +71,13 @@ export interface McpToolArgs {
   ctx: RuntimeCtx
   /** The MCP session id, or null when the transport is stateless (stdio). */
   sessionId: string | null
+  /**
+   * The authenticated principal for this call, or null when the project
+   * defines no `mcp/auth.ts`. When auth is configured the runtime rejects
+   * unauthenticated requests before a handler runs, so inside a handler this
+   * is non-null whenever auth is on.
+   */
+  auth: McpAuthInfo | null
   /** Aborts when the client cancels the call or disconnects. */
   signal: AbortSignal
   /** Emits a log message to the client, if it supports logging. */
@@ -206,9 +214,92 @@ export interface McpPrompt {
   file: string
 }
 
+/**
+ * The authenticated principal a request carries, as returned by an
+ * `mcp/auth.ts` handler and handed to every tool, resource and prompt.
+ */
+export interface McpAuthInfo {
+  /** Stable identifier of the caller — typically the token's `sub` claim. */
+  subject: string
+  /**
+   * The tenant this principal belongs to. The runtime binds an MCP session to
+   * the tenant that opened it and rejects a later request whose token names a
+   * different tenant, so one connection can never cross tenants.
+   */
+  tenant: string
+  /** OAuth scopes granted to the token. Enforce per-tool as needed. */
+  scopes: string[]
+  /** The validated token claims, for anything the fields above do not cover. */
+  claims: Record<string, unknown>
+  /** The raw bearer token, in case a downstream call must forward it. */
+  token: string
+}
+
+/** What an `authenticate` handler receives for one request. */
+export interface McpAuthContext {
+  /**
+   * The root DI context, so the handler can reach singletons — a token
+   * verifier, a JWKS client, configuration. Session- and request-scoped
+   * values do not exist yet: authentication runs before either is created.
+   */
+  ctx: RuntimeCtx
+  /** The raw HTTP request, for reading headers beyond the bearer token. */
+  req: IncomingMessage
+  /** The bearer token from the `Authorization` header, or null if absent. */
+  token: string | null
+  /**
+   * The absolute URL this MCP server is reached at (e.g.
+   * `https://api.example.com/mcp`). Use it as the expected token `aud`.
+   */
+  resource: string
+}
+
+/**
+ * RFC 9728 protected-resource metadata. The runtime serves it at
+ * `/.well-known/oauth-protected-resource` so a client can discover which
+ * authorization server to obtain a token from.
+ */
+export interface McpProtectedResourceMetadata {
+  /** Issuer URL(s) of the authorization server(s) that mint valid tokens. */
+  authorizationServers: string[]
+  /** Scopes this resource understands. Advertised to clients. */
+  scopesSupported?: string[]
+  /** Human-readable name of the protected resource. */
+  resourceName?: string
+  /** Any further RFC 9728 fields, emitted verbatim (snake_case). */
+  [key: string]: unknown
+}
+
+export type McpAuthenticate = (ctx: McpAuthContext) => McpAuthInfo | Promise<McpAuthInfo>
+
+export interface McpAuthSpec {
+  metadata: McpProtectedResourceMetadata
+  /**
+   * Validates the request and returns the authenticated principal. Throw
+   * `error(401, ...)` for a missing or invalid token and `error(403, ...)`
+   * for a valid token that lacks access; the runtime turns the former into a
+   * `WWW-Authenticate` challenge and the latter into a plain rejection.
+   */
+  authenticate: McpAuthenticate
+}
+
+export interface McpAuthDefinition extends Definition<"mcpAuth"> {
+  metadata: McpProtectedResourceMetadata
+  authenticate: McpAuthenticate
+}
+
+/** The auth handler as registered by the scanner, with its origin. */
+export interface McpAuth {
+  metadata: McpProtectedResourceMetadata
+  authenticate: McpAuthenticate
+  file: string
+}
+
 /** Everything the scanner found under `mcp/`. */
 export interface McpScan {
   tools: McpTool[]
   resources: McpResource[]
   prompts: McpPrompt[]
+  /** The `mcp/auth.ts` handler, when the project defines one. */
+  auth: McpAuth | null
 }
