@@ -887,6 +887,8 @@ var McpRuntime = class {
    * one session never read each other's identity.
    */
   #authStore = new import_node_async_hooks.AsyncLocalStorage();
+  /** The metadata document, resolved (from a factory, if given) on first serve. */
+  #resolvedMetadata = null;
   constructor(options2) {
     this.#options = { exposeErrors: false, ...options2 };
     this.path = options2.path ?? "/mcp";
@@ -921,7 +923,7 @@ var McpRuntime = class {
     if (this.empty) return false;
     const url = new URL(req.url ?? "/", `${scheme(req)}://${req.headers.host ?? "localhost"}`);
     if (this.secured && isMetadataPath(url.pathname)) {
-      this.#serveMetadata(res, url);
+      await this.#serveMetadata(res, url);
       return true;
     }
     if (url.pathname !== this.path) return false;
@@ -1163,9 +1165,27 @@ var McpRuntime = class {
     });
     res.end(JSON.stringify({ error: code, error_description: description }));
   }
-  /** Serves the RFC 9728 protected-resource metadata document. */
-  #serveMetadata(res, url) {
+  /**
+   * Resolves the auth metadata, invoking a factory against the root context on
+   * first use and caching the result. A factory lets the document depend on
+   * DI-resolved values that do not exist when `mcp/auth.ts` is imported.
+   */
+  async #metadata() {
+    if (this.#resolvedMetadata) return this.#resolvedMetadata;
     const { metadata } = this.#options.auth;
+    this.#resolvedMetadata = typeof metadata === "function" ? await metadata({ ctx: this.#options.root.ctx }) : metadata;
+    return this.#resolvedMetadata;
+  }
+  /** Serves the RFC 9728 protected-resource metadata document. */
+  async #serveMetadata(res, url) {
+    let metadata;
+    try {
+      metadata = await this.#metadata();
+    } catch (err) {
+      this.#reportInternal(err, this.#options.auth.file ?? "mcp/auth");
+      writeJsonRpcError(res, 500, -32603, "Internal error");
+      return;
+    }
     const { authorizationServers, scopesSupported, resourceName, ...rest } = metadata;
     const body = {
       resource: `${url.origin}${this.path}`,

@@ -10,7 +10,6 @@ import {
   type JWK,
   type JWTPayload,
 } from "jose"
-import { settings } from "../lib/settings.js"
 
 /**
  * The token verifier — and, in dev mode, the signer behind the built-in
@@ -37,12 +36,12 @@ export interface Keys {
   mint(claims: JWTPayload): Promise<string>
 }
 
-const verifyOptions = { issuer: settings.issuer, audience: settings.audience }
-
 export default service(async (ctx): Promise<Keys> => {
-  if (settings.jwksUrl) {
-    const remote = createRemoteJWKSet(new URL(settings.jwksUrl))
-    ctx.logger.info(`Verifying tokens against IdP JWKS at ${settings.jwksUrl}`)
+  const verifyOptions = { issuer: ctx.config.issuer, audience: ctx.config.audience }
+
+  if (ctx.config.jwksUrl) {
+    const remote = createRemoteJWKSet(new URL(ctx.config.jwksUrl))
+    ctx.logger.info(`Verifying tokens against IdP JWKS at ${ctx.config.jwksUrl}`)
     return {
       mode: "remote",
       async verify(token) {
@@ -75,8 +74,8 @@ export default service(async (ctx): Promise<Keys> => {
       return new SignJWT(claims)
         .setProtectedHeader({ alg: "RS256", kid })
         .setIssuedAt()
-        .setIssuer(settings.issuer)
-        .setAudience(settings.audience)
+        .setIssuer(ctx.config.issuer)
+        .setAudience(ctx.config.audience)
         .setExpirationTime("1h")
         .sign(privateKey)
     },

@@ -10,11 +10,13 @@ const TOKENS: Record<string, { subject: string; tenant: string; scopes: string[]
 }
 
 export default mcpAuth({
-  metadata: {
-    authorizationServers: ["https://auth.test"],
-    scopesSupported: ["notes:read", "notes:write"],
-    resourceName: "Test resource",
-  },
+  // Factory form: the document is built from `ctx.config`, which only exists
+  // once the container is up — a plain object here could not reach it.
+  metadata: ({ ctx }) => ({
+    authorizationServers: ctx.config.authorizationServers,
+    scopesSupported: ctx.config.scopes,
+    resourceName: ctx.config.resourceName,
+  }),
   async authenticate({ token }) {
     if (!token) throw error(401, { message: "Bearer token required" })
     const principal = TOKENS[token]

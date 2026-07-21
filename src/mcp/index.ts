@@ -22,6 +22,8 @@ export type {
   McpAuthenticate,
   McpAuthSpec,
   McpContent,
+  McpMetadata,
+  McpMetadataContext,
   McpProtectedResourceMetadata,
   McpImageContent,
   McpPrompt,

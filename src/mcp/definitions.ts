@@ -80,6 +80,12 @@ export function resource<Result = unknown>(
  * authorization server. The principal `authenticate` returns is handed to
  * every tool, resource and prompt as `args.auth`.
  *
+ * `metadata` may be a plain object or a factory `({ ctx }) => metadata` — use
+ * the factory when the document depends on DI-resolved values (e.g.
+ * `ctx.config`), since a plain object is captured at module load, before any
+ * container exists. The factory runs once, lazily, when the document is first
+ * served.
+ *
  * ```ts
  * export default mcpAuth({
  *   metadata: { authorizationServers: ["https://auth.example.com"] },

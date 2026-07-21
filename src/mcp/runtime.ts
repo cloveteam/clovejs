@@ -7,7 +7,7 @@ import { CloveBootError, isHttpError } from "../errors.js"
 import type { SessionManager } from "../session/index.js"
 import { errorText, isRecoverable, toPromptMessages, toResourceContents, toToolContent } from "./content.js"
 import { isUriTemplate } from "./paths.js"
-import type { McpAuth, McpAuthInfo, McpScan, McpToolArgs } from "./types.js"
+import type { McpAuth, McpAuthInfo, McpProtectedResourceMetadata, McpScan, McpToolArgs } from "./types.js"
 
 export const MCP_SESSION_HEADER = "mcp-session-id"
 
@@ -76,6 +76,8 @@ export class McpRuntime {
    * one session never read each other's identity.
    */
   #authStore = new AsyncLocalStorage<McpAuthInfo | null>()
+  /** The metadata document, resolved (from a factory, if given) on first serve. */
+  #resolvedMetadata: McpProtectedResourceMetadata | null = null
 
   constructor(options: McpRuntimeOptions) {
     this.#options = { exposeErrors: false, ...options }
@@ -119,7 +121,7 @@ export class McpRuntime {
     // Discovery: `/.well-known/oauth-protected-resource` is public, so it is
     // answered before the token check that guards everything else.
     if (this.secured && isMetadataPath(url.pathname)) {
-      this.#serveMetadata(res, url)
+      await this.#serveMetadata(res, url)
       return true
     }
 
@@ -428,9 +430,29 @@ export class McpRuntime {
     res.end(JSON.stringify({ error: code, error_description: description }))
   }
 
-  /** Serves the RFC 9728 protected-resource metadata document. */
-  #serveMetadata(res: ServerResponse, url: URL): void {
+  /**
+   * Resolves the auth metadata, invoking a factory against the root context on
+   * first use and caching the result. A factory lets the document depend on
+   * DI-resolved values that do not exist when `mcp/auth.ts` is imported.
+   */
+  async #metadata(): Promise<McpProtectedResourceMetadata> {
+    if (this.#resolvedMetadata) return this.#resolvedMetadata
     const { metadata } = this.#options.auth!
+    this.#resolvedMetadata =
+      typeof metadata === "function" ? await metadata({ ctx: this.#options.root.ctx }) : metadata
+    return this.#resolvedMetadata
+  }
+
+  /** Serves the RFC 9728 protected-resource metadata document. */
+  async #serveMetadata(res: ServerResponse, url: URL): Promise<void> {
+    let metadata: McpProtectedResourceMetadata
+    try {
+      metadata = await this.#metadata()
+    } catch (err) {
+      this.#reportInternal(err, this.#options.auth!.file ?? "mcp/auth")
+      writeJsonRpcError(res, 500, -32603, "Internal error")
+      return
+    }
     const { authorizationServers, scopesSupported, resourceName, ...rest } = metadata
     const body = {
       resource: `${url.origin}${this.path}`,

@@ -272,8 +272,27 @@ export interface McpProtectedResourceMetadata {
 
 export type McpAuthenticate = (ctx: McpAuthContext) => McpAuthInfo | Promise<McpAuthInfo>
 
+/** What a `metadata` factory receives. An object so it can grow without breaking callers. */
+export interface McpMetadataContext {
+  /**
+   * The root DI context. Unlike a plain `metadata` object — captured at module
+   * load, before any container exists — a factory runs at boot with singletons
+   * resolved, so it can read `ctx.config` and other providers.
+   */
+  ctx: RuntimeCtx
+}
+
+/**
+ * The protected-resource metadata, or a factory that builds it from the root DI
+ * context. The factory is invoked once, lazily, the first time the well-known
+ * document is served, and its result is cached.
+ */
+export type McpMetadata =
+  | McpProtectedResourceMetadata
+  | ((ctx: McpMetadataContext) => McpProtectedResourceMetadata | Promise<McpProtectedResourceMetadata>)
+
 export interface McpAuthSpec {
-  metadata: McpProtectedResourceMetadata
+  metadata: McpMetadata
   /**
    * Validates the request and returns the authenticated principal. Throw
    * `error(401, ...)` for a missing or invalid token and `error(403, ...)`
@@ -284,13 +303,13 @@ export interface McpAuthSpec {
 }
 
 export interface McpAuthDefinition extends Definition<"mcpAuth"> {
-  metadata: McpProtectedResourceMetadata
+  metadata: McpMetadata
   authenticate: McpAuthenticate
 }
 
 /** The auth handler as registered by the scanner, with its origin. */
 export interface McpAuth {
-  metadata: McpProtectedResourceMetadata
+  metadata: McpMetadata
   authenticate: McpAuthenticate
   file: string
 }

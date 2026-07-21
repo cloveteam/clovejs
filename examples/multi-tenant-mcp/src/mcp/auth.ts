@@ -1,5 +1,4 @@
 import { error, mcpAuth } from "clovejs/mcp"
-import { SCOPES, settings } from "../lib/settings.js"
 
 /**
  * Turns this server into an OAuth 2.1 protected resource.
@@ -17,14 +16,15 @@ import { SCOPES, settings } from "../lib/settings.js"
  * tenant's records.
  */
 export default mcpAuth({
-  // Published verbatim (snake_cased) at the well-known endpoint. `metadata` is
-  // read at boot, before any DI context exists, which is why it comes from the
-  // settings module rather than `ctx`.
-  metadata: {
-    authorizationServers: [settings.issuer],
-    scopesSupported: [...SCOPES],
+  // Published verbatim (snake_cased) at the well-known endpoint. A factory
+  // rather than a plain object: it runs once, lazily, with the container up, so
+  // it can read `ctx.config` — a bare object here is captured at import time,
+  // before any DI context exists.
+  metadata: ({ ctx }) => ({
+    authorizationServers: [ctx.config.issuer],
+    scopesSupported: ctx.config.scopes,
     resourceName: "CloveJS multi-tenant notes",
-  },
+  }),
 
   async authenticate({ ctx, token, resource }) {
     if (!token) {

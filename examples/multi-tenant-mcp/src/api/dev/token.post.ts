@@ -1,5 +1,4 @@
 import { error, post } from "clovejs"
-import { settings } from "../../lib/settings.js"
 
 /**
  * The built-in dev authorization server's token endpoint — a stand-in for a
@@ -26,14 +25,14 @@ export default post(async (req, res, ctx) => {
     scopes?: string[]
   }
 
-  if (!body.tenant || !settings.tenants.includes(body.tenant)) {
+  if (!body.tenant || !ctx.config.tenants.includes(body.tenant)) {
     throw error(400, {
-      message: `"tenant" must be one of: ${settings.tenants.join(", ")}`,
+      message: `"tenant" must be one of: ${ctx.config.tenants.join(", ")}`,
     })
   }
 
-  const scopes = body.scopes ?? settings.scopes
-  const invalid = scopes.filter((s) => !settings.scopes.includes(s))
+  const scopes = body.scopes ?? ctx.config.scopes
+  const invalid = scopes.filter((s) => !ctx.config.scopes.includes(s))
   if (invalid.length) {
     throw error(400, { message: `Unknown scope(s): ${invalid.join(", ")}` })
   }

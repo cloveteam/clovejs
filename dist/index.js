@@ -11,7 +11,7 @@ import {
   isHttpError,
   stripExtension,
   walkDir
-} from "./chunk-H73KQ3IP.js";
+} from "./chunk-A5OOHU2K.js";
 
 // src/definitions.ts
 function route(method, handler) {
