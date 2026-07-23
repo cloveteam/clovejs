@@ -6,7 +6,7 @@ export default tseslint.config(
   {
     // Generated or vendored output is never linted.
     ignores: [
-      "dist/**",
+      "**/dist/**",
       "coverage/**",
       "node_modules/**",
       "docs/.vitepress/dist/**",

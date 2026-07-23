@@ -30,6 +30,7 @@ and injectables, fully typed, with zero manual registration.
 - 🔤 **TypeScript from the box.** Fully typed, automatically — no manual annotations, ever.
 - 🧩 **DI in the box.** Singleton, session and request lifetime scopes.
 - 🔌 **WebSockets included.** Same conventions, `[param]` segments and all.
+- 📡 **Server-Sent Events, first-class.** Stream events with `sse()` — framing, heartbeats and reconnect handled.
 - 🧠 **MCP servers too.** Drop a file in `mcp/tools/` and your app is a Model Context Protocol server.
 - 🤝 **Adopts incrementally.** Mount Clove in an app you already have and migrate routes over at your own pace.
 - 🧪 **Testable in memory.** `clovejs/testing` boots your app with no port and lets you swap any dependency for a fake.
@@ -56,6 +57,7 @@ reference and deployment notes. Sources live in [`docs/`](./docs).
 - 📦 [The JSON middleware](#the-json-middleware)
 - 🚨 [Errors](#errors)
 - 🔌 [WebSockets](#websockets)
+- 📡 [Server-Sent Events](#server-sent-events)
 - 🧠 [MCP servers](#mcp-servers)
 - 🍪 [Sessions](#sessions)
 - 🧪 [Testing](#testing)
@@ -326,6 +328,28 @@ Each connection gets its own request-scoped container, disposed when the socket
 closes. HTTP middlewares do **not** run for upgrades — authenticate inside the
 handler using `ctx`.
 
+## Server-Sent Events
+
+`sse()` streams events to the client over plain HTTP. It lives in `api/` and runs
+through the middleware chain like a GET route, but the handler pushes events
+instead of returning a body, and the connection stays open until the client
+disconnects. `api/v1/ticker.get.ts`:
+
+```ts
+import { sse } from "clovejs"
+
+export default sse(async ({ ctx, emit, onClose }) => {
+  const feed = ctx.prices.subscribe()
+  onClose(() => feed.unsubscribe())
+  feed.on("tick", (p) => emit({ event: "tick", id: p.seq, data: p }))
+}).options({ heartbeat: 15_000 })
+```
+
+The runtime writes the `text/event-stream` framing, runs the heartbeat, and
+surfaces the client's `Last-Event-ID` as `lastEventId` so you can resume after
+a reconnect. See the [Server-Sent Events
+guide](https://cloveteam.github.io/clovejs/guide/sse).
+
 ## MCP servers
 
 Files in `mcp/` turn your project into a [Model Context
@@ -485,6 +509,7 @@ Five runnable apps live in [`examples/`](./examples):
 | [`examples/rest`](./examples/rest) | Routes, route parameters, status-code rules, all three DI lifetimes, middleware ordering, sessions |
 | [`examples/mcp`](./examples/mcp) | An MCP server: tools, resources, prompts, session state across calls |
 | [`examples/websocket`](./examples/websocket) | Sockets, parameterised socket routes, broadcast, an HTTP → socket bridge |
+| [`examples/sse`](./examples/sse) | Server-Sent Events: named events, Last-Event-ID resume, heartbeats, an HTTP → stream bridge, a browser EventSource page |
 | [`examples/multi-tenant-mcp`](./examples/multi-tenant-mcp) | A multi-tenant MCP server: OAuth 2.1 bearer tokens, RFC 9728 discovery, per-tenant session isolation |
 | [`examples/testing`](./examples/testing) | A full test suite: in-memory integration tests, dependency overrides, the MCP and WebSocket harnesses, and unit helpers |
 

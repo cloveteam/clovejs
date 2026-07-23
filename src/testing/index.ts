@@ -19,9 +19,11 @@ import {
   type ValueFactory,
 } from "../types.js"
 import { MockRequest, MockResponse, readResponse, type TestResponse } from "./http.js"
+import { makeSseStream, type TestSseStream } from "./sse.js"
 import { connectSocket, type TestSocket } from "./ws.js"
 
 export type { TestResponse } from "./http.js"
+export type { SseMessage, TestSseStream } from "./sse.js"
 export type { TestSocket } from "./ws.js"
 export type { McpInvokeOptions, McpResourceResult } from "../mcp/runtime.js"
 
@@ -82,6 +84,8 @@ export interface TestApp {
   del(path: string, init?: TestRequestInit): Promise<TestResponse>
   head(path: string, init?: TestRequestInit): Promise<TestResponse>
   options(path: string, init?: TestRequestInit): Promise<TestResponse>
+  /** Opens a Server-Sent Events stream against an `sse()` route. */
+  sse(path: string, init?: TestRequestInit): TestSseStream
   readonly cookies: CookieJar
   readonly mcp: TestMcp
   readonly ws: { connect(path: string): TestSocket }
@@ -156,6 +160,21 @@ class TestAppHarness implements TestApp {
     this.request(path, { ...init, method: "PUT", body })
   patch = (path: string, body?: unknown, init?: TestRequestInit) =>
     this.request(path, { ...init, method: "PATCH", body })
+
+  sse(path: string, init: TestRequestInit = {}): TestSseStream {
+    const headers = lowerHeaders(init.headers)
+    if (this.#jar.size > 0 && !headers.cookie) {
+      headers.cookie = [...this.#jar].map(([k, v]) => `${k}=${v}`).join("; ")
+    }
+    if (!headers.accept) headers.accept = "text/event-stream"
+
+    const req = new MockRequest({ method: "GET", url: path, headers })
+    const { capture, stream } = makeSseStream()
+    // Fire and forget: `handle` stays pending for the connection's lifetime, so
+    // events surface through the stream rather than a resolved response.
+    this.app.listener(req as never, capture as never)
+    return stream
+  }
 
   readonly cookies: CookieJar = {
     set: (name, value) => void this.#jar.set(name, value),

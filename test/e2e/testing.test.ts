@@ -169,6 +169,47 @@ describe("createTestApp — WebSocket", () => {
   })
 })
 
+describe("createTestApp — SSE", () => {
+  it("streams framed events and reports the content type", async () => {
+    app = await createTestApp({ rootDir: fixture("basic") })
+    const stream = app.sse("/api/v1/ticker")
+
+    const first = await stream.next()
+    expect(first).toMatchObject({ event: "tick", id: "1", data: '{"n":1}' })
+    const second = await stream.next()
+    expect(second.id).toBe("2")
+    const third = await stream.next()
+    expect(third.id).toBe("3")
+
+    expect(stream.headers.get("content-type")).toBe("text/event-stream; charset=utf-8")
+  })
+
+  it("resumes from Last-Event-ID on reconnect", async () => {
+    app = await createTestApp({ rootDir: fixture("basic") })
+    const stream = app.sse("/api/v1/ticker", { headers: { "last-event-id": "3" } })
+
+    expect((await stream.next()).id).toBe("4")
+    expect((await stream.next()).id).toBe("5")
+    expect((await stream.next()).id).toBe("6")
+  })
+
+  it("runs onClose and disposes the scope when the client disconnects", async () => {
+    app = await createTestApp({ rootDir: fixture("basic") })
+    const stream = app.sse("/api/v1/feed")
+
+    expect(JSON.parse((await stream.next()).data)).toEqual({ hello: true })
+
+    // `stats` is a shared singleton, so assert the delta the close produced
+    // rather than an absolute count.
+    const before = (await app.get("/api/v1/stats")).json.streamsClosed
+    await stream.close()
+    expect(stream.closed).toBe(true)
+
+    const after = (await app.get("/api/v1/stats")).json.streamsClosed
+    expect(after).toBe(before + 1)
+  })
+})
+
 describe("runHandler", () => {
   it("applies the JSON rules to a returned object", async () => {
     const handler = get(async () => ({ ok: true }))

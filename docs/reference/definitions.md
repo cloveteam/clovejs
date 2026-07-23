@@ -84,6 +84,24 @@ ws(handler: (args: WsArgs) => void | Promise<void>): WsDefinition
 A WebSocket endpoint. The handler runs once per connection; see
 [WebSockets](/guide/websockets) for the fields on `args`.
 
+## `sse(handler)`
+
+```ts
+sse(
+  handler: (args: SseArgs) => void | Promise<void>,
+): SseRouteDefinition
+
+// SseRouteDefinition extends RouteDefinition with:
+.options(options: { heartbeat?: number; retry?: number }): SseRouteDefinition
+```
+
+A [Server-Sent Events](/guide/sse) endpoint. Lives in `api/` and runs through
+the middleware chain like a GET route, but the handler streams events through
+`args` and the connection stays open until the client disconnects or `close()`
+is called. Stream options are set with a chainable `.options()`, as routes carry
+`.meta()`: `heartbeat` sends keep-alive comments on an interval; `retry` sets
+the initial reconnect hint.
+
 ## `tool(spec)`
 
 ```ts

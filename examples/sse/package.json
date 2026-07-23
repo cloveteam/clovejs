@@ -1,0 +1,16 @@
+{
+  "name": "clovejs-example-sse",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A runnable CloveJS Server-Sent Events app: a live activity feed with named events, Last-Event-ID resume, heartbeats, an HTTP bridge, and a browser demo page.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/main.js",
+    "routes": "clove routes"
+  },
+  "dependencies": {
+    "clovejs": "file:../.."
+  }
+}

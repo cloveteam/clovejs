@@ -1,0 +1,50 @@
+# CloveJS SSE example — HTTP requests
+#
+# A dependency-free alternative to a Postman/Insomnia collection: this plain
+# text format is read natively by JetBrains IDEs (Run > HTTP Client) and by
+# VS Code's "REST Client" extension (humao.rest-client).
+#
+# Server-Sent Events are a streaming response, so the best way to watch a stream
+# is the browser demo at http://localhost:3000/api or `curl -N` (see below).
+# These blocks drive the HTTP side that feeds the streams.
+#
+# Start the server first: npm run dev -w clovejs-example-sse
+
+@baseUrl = http://localhost:3000
+
+### Channel state over HTTP — empty until something is published
+GET {{baseUrl}}/api/channels/demo
+
+### Publish an event. Every stream open on /api/channels/demo/stream receives
+### it — open http://localhost:3000/api in a browser first, then send this.
+POST {{baseUrl}}/api/channels/demo
+Content-Type: application/json
+
+{
+  "type": "alert",
+  "data": { "text": "Deploy finished" }
+}
+
+### A plain message event
+POST {{baseUrl}}/api/channels/demo
+Content-Type: application/json
+
+{
+  "type": "message",
+  "data": { "text": "Hello from HTTP" }
+}
+
+### Channel state again — the events are in `recent` now, each with a `seq`
+GET {{baseUrl}}/api/channels/demo
+
+# ---------------------------------------------------------------------------
+# Watching a stream from the terminal (run these in a shell, not the HTTP
+# client). `-N` disables curl's buffering so events print as they arrive.
+#
+#   curl -N http://localhost:3000/api/clock
+#   curl -N http://localhost:3000/api/channels/demo/stream
+#
+# Reconnect resume — ask for everything after event #2:
+#
+#   curl -N -H 'Last-Event-ID: 2' http://localhost:3000/api/channels/demo/stream
+# ---------------------------------------------------------------------------

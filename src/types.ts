@@ -145,6 +145,73 @@ export interface WsDefinition extends Definition<"ws"> {
   handler: WsHandlerFn
 }
 
+/** One Server-Sent Event, as passed to {@link SseArgs.emit}. */
+export interface SseEvent {
+  /** The `event:` field. Defaults to `"message"` on the client when omitted. */
+  event?: string
+  /** The payload. Objects are JSON-serialized; strings are sent verbatim. */
+  data: string | object
+  /** The `id:` field, echoed back as `Last-Event-ID` when the client reconnects. */
+  id?: string
+  /** The `retry:` reconnect hint, in milliseconds, for this event. */
+  retry?: number
+}
+
+/**
+ * The arguments handed to an `sse()` handler. A push-oriented view of the
+ * response: send events, react to disconnect, and read the reconnect cursor —
+ * without touching the raw stream.
+ */
+export interface SseArgs {
+  /** Sends a `message` event. Objects are JSON-serialized; strings sent as-is. */
+  send(data: string | object): void
+  /** Sends a named/typed event with optional `id` and per-event `retry`. */
+  emit(event: SseEvent): void
+  /** Writes an SSE comment line (`: text`). Useful as an explicit keep-alive. */
+  comment(text: string): void
+  /**
+   * The `Last-Event-ID` the client sent when reconnecting, or `undefined` on a
+   * fresh connection. Pair it with `emit({ id })` to resume without gaps.
+   */
+  lastEventId: string | undefined
+  /** Registers a callback for when the connection ends, from either side. */
+  onClose(fn: () => void | Promise<void>): void
+  /** Registers a teardown callback, run after {@link onClose} at final cleanup. */
+  onDestroy(fn: () => void | Promise<void>): void
+  /** Ends the stream from the server side. */
+  close(): void
+  /** True while the connection is writable; false once it has ended. */
+  readonly open: boolean
+  ctx: RuntimeCtx
+  req: CloveRequest
+  params: Record<string, string>
+}
+
+export type SseHandlerFn = (args: SseArgs) => void | Promise<void>
+
+/** Options for the `sse()` route builder. */
+export interface SseOptions {
+  /**
+   * Interval in milliseconds at which the runtime writes a comment line to keep
+   * the connection alive through idle-timeout proxies. Omit to disable.
+   */
+  heartbeat?: number
+  /**
+   * Initial `retry:` reconnect hint, in milliseconds, sent once when the stream
+   * opens. Individual events can override it via {@link SseEvent.retry}.
+   */
+  retry?: number
+}
+
+/**
+ * The definition `sse()` returns: a GET route carrying a chainable `options()`
+ * for its {@link SseOptions}, mirroring how `.meta()` reads on a plain route.
+ */
+export interface SseRouteDefinition extends RouteDefinition {
+  /** Sets stream options (heartbeat, retry). Chainable; merges with prior calls. */
+  options(options: SseOptions): SseRouteDefinition
+}
+
 export type AnyDefinition =
   | RouteDefinition
   | MiddlewareDefinition

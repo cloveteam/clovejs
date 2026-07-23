@@ -10,6 +10,7 @@ export {
   post,
   put,
   service,
+  sse,
   ws,
 } from "./definitions.js"
 
@@ -47,6 +48,10 @@ export type {
   RouteMeta,
   RuntimeCtx,
   ServiceFactory,
+  SseArgs,
+  SseEvent,
+  SseHandlerFn,
+  SseOptions,
   ValueFactory,
   WsArgs,
   WsHandlerFn,
@@ -57,6 +62,7 @@ export type {
   MiddlewareDefinition,
   RouteDefinition,
   ServiceDefinition,
+  SseRouteDefinition,
   WsDefinition,
 } from "./types.js"
 

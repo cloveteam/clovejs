@@ -10,5 +10,7 @@ export default di({
   value: {
     socketsOpened: 0,
     socketsDestroyed: 0,
+    streamsOpened: 0,
+    streamsClosed: 0,
   },
 })

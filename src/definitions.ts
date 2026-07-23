@@ -1,3 +1,4 @@
+import { serveSse } from "./http/sse.js"
 import {
   KIND,
   META,
@@ -11,6 +12,9 @@ import {
   type RouteMeta,
   type ServiceDefinition,
   type ServiceFactory,
+  type SseHandlerFn,
+  type SseOptions,
+  type SseRouteDefinition,
   type WsDefinition,
   type WsHandlerFn,
 } from "./types.js"
@@ -58,4 +62,27 @@ export function di<T>(spec: DiSpec<T>): DiDefinition<T> {
 
 export function ws(handler: WsHandlerFn): WsDefinition {
   return { [KIND]: "ws", handler }
+}
+
+/**
+ * Declares a Server-Sent Events endpoint. Lives in `api/` like any GET route —
+ * it flows through the HTTP middleware chain and supports path params — but the
+ * handler receives a push-oriented {@link SseArgs} instead of `(req, res)`, and
+ * the connection stays open until the client disconnects or `close()` is called.
+ *
+ * Stream options are set with a chainable `.options()`, the way routes carry
+ * `.meta()`: `sse(handler).options({ heartbeat: 15_000 })`.
+ */
+export function sse(handler: SseHandlerFn): SseRouteDefinition {
+  // Read by `serveSse` per connection, so `.options()` can populate it any time
+  // before the first request — exactly like `.meta()` mutating `def[META]`.
+  const opts: SseOptions = {}
+  const def = route("GET", serveSse(handler, opts)) as SseRouteDefinition
+  // The stream owns the response; the JSON middleware must not try to write one.
+  def[META].json = false
+  def.options = (options: SseOptions) => {
+    Object.assign(opts, options)
+    return def
+  }
+  return def
 }

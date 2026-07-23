@@ -1,9 +1,9 @@
-import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, W as WsHandlerFn, e as WsDefinition } from './runtime-DJ9Y3g8M.cjs';
-export { C as CloveRequest, f as CloveResponse, g as CookieOptions, h as Ctx, H as HttpMethod, L as LifecycleHooks, i as Lifetime, j as LogLevel, k as Logger, l as MemorySessionStore, m as MiddlewareArgs, n as Route, o as RouteMeta, p as RuntimeCtx, q as SessionStore, V as ValueFactory, r as WsArgs, s as createLogger } from './runtime-DJ9Y3g8M.cjs';
+import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, e as SseHandlerFn, f as SseRouteDefinition, W as WsHandlerFn, g as WsDefinition } from './runtime-IsKMEuKt.cjs';
+export { C as CloveRequest, h as CloveResponse, i as CookieOptions, j as Ctx, H as HttpMethod, L as LifecycleHooks, k as Lifetime, l as LogLevel, m as Logger, n as MemorySessionStore, o as MiddlewareArgs, p as Route, q as RouteMeta, r as RuntimeCtx, s as SessionStore, t as SseArgs, u as SseEvent, v as SseOptions, V as ValueFactory, w as WsArgs, x as createLogger } from './runtime-IsKMEuKt.cjs';
 export { C as CloveBootError, H as HttpError, e as error, i as isHttpError } from './errors-il7qK9dp.cjs';
 import { Server } from 'node:http';
-import { A as AppOptions, C as CloveApp } from './app-C01h8o_d.cjs';
-export { c as createApp } from './app-C01h8o_d.cjs';
+import { A as AppOptions, C as CloveApp } from './app-SL2sUO4j.cjs';
+export { c as createApp } from './app-SL2sUO4j.cjs';
 import 'node:stream';
 
 declare const get: (handler: RouteHandlerFn) => RouteDefinition;
@@ -19,6 +19,16 @@ declare function middleware(fn: MiddlewareFn): MiddlewareDefinition;
 declare function service<M>(factory: ServiceFactory<M>): ServiceDefinition<M>;
 declare function di<T>(spec: DiSpec<T>): DiDefinition<T>;
 declare function ws(handler: WsHandlerFn): WsDefinition;
+/**
+ * Declares a Server-Sent Events endpoint. Lives in `api/` like any GET route —
+ * it flows through the HTTP middleware chain and supports path params — but the
+ * handler receives a push-oriented {@link SseArgs} instead of `(req, res)`, and
+ * the connection stays open until the client disconnects or `close()` is called.
+ *
+ * Stream options are set with a chainable `.options()`, the way routes carry
+ * `.meta()`: `sse(handler).options({ heartbeat: 15_000 })`.
+ */
+declare function sse(handler: SseHandlerFn): SseRouteDefinition;
 
 interface BootstrapOptions extends AppOptions {
     port?: number;
@@ -104,4 +114,4 @@ type CloveService<T> = T extends ServiceDefinition<infer R> ? Awaited<R> : never
  */
 type CloveDi<T> = T extends DiDefinition<infer R> ? R extends (...args: any[]) => infer F ? Awaited<F> : R : never;
 
-export { AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, type LoadEnvOptions, MiddlewareDefinition, MiddlewareFn, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, WsDefinition, WsHandlerFn, all, bootstrap, del, di, engine, get, head, loadEnv, middleware, options, parseEnv, patch, post, put, service, ws };
+export { AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, type LoadEnvOptions, MiddlewareDefinition, MiddlewareFn, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, SseHandlerFn, SseRouteDefinition, WsDefinition, WsHandlerFn, all, bootstrap, del, di, engine, get, head, loadEnv, middleware, options, parseEnv, patch, post, put, service, sse, ws };

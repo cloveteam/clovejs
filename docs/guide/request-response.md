@@ -127,5 +127,10 @@ export default get(async (req, res, ctx) => {
 `res.sent` reports whether anything has been written — through the wrapper *or*
 the raw stream — which is what lets the pipeline know to stand down.
 
+::: tip Streaming events?
+For Server-Sent Events, reach for [`sse()`](/guide/sse) instead of writing the
+`text/event-stream` framing by hand.
+:::
+
 Full member lists: [CloveRequest](/reference/clove-request),
 [CloveResponse](/reference/clove-response).
