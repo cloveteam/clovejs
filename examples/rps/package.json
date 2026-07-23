@@ -1,0 +1,19 @@
+{
+  "name": "clovejs-example-rps",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A minimal CloveJS API and Express baseline for startup and throughput benchmarks.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/main.js",
+    "start:express": "node express.js",
+    "routes": "clove routes",
+    "benchmark": "npm run build && node load-test.js"
+  },
+  "dependencies": {
+    "clovejs": "file:../..",
+    "express": "^5.2.1"
+  }
+}
