@@ -87,6 +87,7 @@ export default defineConfig({
           text: "Running it",
           items: [
             { text: "Bootstrap", link: "/guide/bootstrap" },
+            { text: "Testing", link: "/guide/testing" },
             { text: "Express interop", link: "/guide/express-interop" },
             { text: "Deployment", link: "/guide/deployment" },
           ],

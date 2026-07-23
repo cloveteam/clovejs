@@ -49,6 +49,19 @@ export interface AppOptions {
   mcpPath?: string
   /** Name and version reported to MCP clients. Defaults to the package name. */
   mcpServerInfo?: { name: string; version: string }
+  /**
+   * Replaces injectables by their `ctx` key before any singleton resolves.
+   *
+   * A plain value swaps the dependency directly; a function is treated as a
+   * factory with the same `(ctx, hooks)` contract as a `service`/`di` file. An
+   * override keeps the lifetime of the key it replaces, and an override for an
+   * unknown key registers as a new singleton.
+   *
+   * This is the one capability production forbids — the registry rejects two
+   * files claiming the same key — and it exists for tests. `createTestApp()`
+   * from `clovejs/testing` is the intended caller.
+   */
+  overrides?: Record<string, unknown>
 }
 
 /**
@@ -267,6 +280,25 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
       value: logger,
       isFactory: false,
     })
+  }
+
+  // Apply test overrides before any container reads the registry, so singletons
+  // resolve against the fakes rather than the real dependencies.
+  if (options.overrides) {
+    for (const [key, value] of Object.entries(options.overrides)) {
+      const existing = scan.registry.get(key)
+      const isFactory = typeof value === "function"
+      scan.registry.override({
+        key,
+        kind: existing?.kind ?? "di",
+        lifetime: existing?.lifetime ?? "singleton",
+        file: "<override>",
+        isFactory,
+        ...(isFactory
+          ? { factory: value as (ctx: any, hooks: any) => unknown }
+          : { value }),
+      })
+    }
   }
 
   const root = new Container(scan.registry, "singleton")

@@ -6,7 +6,7 @@ import {
   deriveContextKey,
   resolveSourceDir,
   walkDir
-} from "./chunk-ST32WZZE.js";
+} from "./chunk-VIVNX6IE.js";
 
 // src/cli/index.ts
 import { execFileSync } from "child_process";
@@ -1021,7 +1021,7 @@ Done. Your assistant picks these up on its next session.` + (result.skipped.leng
       return;
     }
     case "routes": {
-      const { createApp: createApp2 } = await import("./app-GCNQJWTN.js");
+      const { createApp: createApp2 } = await import("./app-DNX2LCZF.js");
       const app = await createApp2({ rootDir, logLevel: "silent" });
       for (const route of app.routes.list()) {
         console.log(`${route.method.padEnd(7)} ${route.path}`);
@@ -1036,7 +1036,7 @@ Done. Your assistant picks these up on its next session.` + (result.skipped.leng
       return;
     }
     case "mcp": {
-      const { createApp: createApp2 } = await import("./app-GCNQJWTN.js");
+      const { createApp: createApp2 } = await import("./app-DNX2LCZF.js");
       if (flags.stdio) {
         console.log = console.error;
         console.info = console.error;

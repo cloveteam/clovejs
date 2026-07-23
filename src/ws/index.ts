@@ -1,6 +1,6 @@
 import type { IncomingMessage, Server } from "node:http"
 import type { Duplex } from "node:stream"
-import { WebSocketServer, type WebSocket } from "ws"
+import { WebSocketServer } from "ws"
 import type { Container } from "../container/container.js"
 import type { Logger } from "../container/logger.js"
 import { CloveRequest } from "../http/request.js"
@@ -16,6 +16,20 @@ export interface WsRuntimeOptions {
 }
 
 /**
+ * The slice of a socket the runtime drives. `ws.WebSocket` satisfies it
+ * structurally; the testing layer supplies an in-memory stand-in that does too,
+ * so a connection can be opened with no server and no real upgrade.
+ */
+export interface SocketLike {
+  readyState: number
+  readonly OPEN: number
+  send(data: string | Buffer): void
+  close(code?: number, reason?: string): void
+  on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown
+  on(event: "close" | "error", listener: (...args: any[]) => void): unknown
+}
+
+/**
  * Routes WebSocket upgrades to `ws/` handlers.
  *
  * Each connection gets its own request-scoped container, disposed when the
@@ -25,7 +39,7 @@ export interface WsRuntimeOptions {
 export class WsRuntime {
   #wss: WebSocketServer
   #options: WsRuntimeOptions
-  #connections = new Set<{ socket: WebSocket; container: Container }>()
+  #connections = new Set<{ socket: SocketLike; container: Container }>()
 
   constructor(options: WsRuntimeOptions) {
     this.#options = options
@@ -60,8 +74,29 @@ export class WsRuntime {
     })
   }
 
+  /**
+   * Opens a connection over a caller-supplied socket, bypassing the HTTP
+   * upgrade. Returns false when no `ws/` handler matches the path, so the
+   * testing layer can turn that into a clear error. Not part of the serving
+   * path — {@link handleUpgrade} is.
+   */
+  openTestConnection(path: string, socket: SocketLike): boolean {
+    const url = new URL(path, "http://localhost")
+    const match = this.#options.sockets.match("GET", url.pathname)
+    const route = match ? this.#options.handlers.get(match.route.path) : undefined
+    if (!match || !route) return false
+    const raw = {
+      method: "GET",
+      url: path,
+      headers: { host: "localhost" },
+      socket: {},
+    } as unknown as IncomingMessage
+    void this.#open(socket, raw, route, match.params)
+    return true
+  }
+
   async #open(
-    socket: WebSocket,
+    socket: SocketLike,
     raw: IncomingMessage,
     route: SocketRoute,
     params: Record<string, string>,

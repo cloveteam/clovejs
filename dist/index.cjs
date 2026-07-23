@@ -867,6 +867,9 @@ function templateSegment(segment) {
   const match = /^\[\.{0,3}(.+)\]$/.exec(segment);
   return match ? `{${match[1]}}` : segment;
 }
+function uriTemplateVariables(uri) {
+  return [...uri.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
+}
 function isUriTemplate(uri) {
   return uri.includes("{");
 }
@@ -1215,6 +1218,84 @@ var McpRuntime = class {
       await this.#options.sessions.destroy(live.sessionId).catch(() => void 0);
     }
   }
+  // --- Programmatic entry points (testing) ---------------------------------
+  //
+  // These run a tool, resource or prompt handler directly against a fresh
+  // request-scoped container — the same lifecycle the transport drives, minus
+  // the JSON-RPC wire. Unlike the transport paths, a thrown error propagates
+  // untouched (an `HttpError` stays an `HttpError`) so a test can assert on it.
+  /** Runs a tool by name and returns the handler's raw result. */
+  async callTool(name, input = {}, opts = {}) {
+    const tool = this.#options.scan.tools.find((t) => t.name === name);
+    if (!tool) throw new Error(`No MCP tool named "${name}".`);
+    const parsed = parseMcpInput(tool.input, input);
+    return this.#testInvoke(opts, (ctx, args) => tool.handler(parsed, ctx, args));
+  }
+  /** Runs a prompt by name and returns the handler's raw result. */
+  async getPrompt(name, input = {}, opts = {}) {
+    const prompt = this.#options.scan.prompts.find((p) => p.name === name);
+    if (!prompt) throw new Error(`No MCP prompt named "${name}".`);
+    const parsed = parseMcpInput(prompt.input, input);
+    return this.#testInvoke(opts, (ctx, args) => prompt.handler(parsed, ctx, args));
+  }
+  /** Reads a resource by URI, matching static URIs and templates alike. */
+  async readResource(uri, opts = {}) {
+    const matched = this.#matchResource(uri);
+    if (!matched) throw new Error(`No MCP resource matches "${uri}".`);
+    const { resource, params } = matched;
+    const result = await this.#testInvoke(
+      opts,
+      (ctx, args) => resource.handler(params, ctx, { ...args, uri })
+    );
+    const contents = toResourceContents(result, uri, resource.mimeType);
+    return {
+      uri,
+      mimeType: resource.mimeType,
+      result,
+      contents,
+      text: contents.find((c) => c.text !== void 0)?.text
+    };
+  }
+  /** Runs one handler in a throwaway request scope with test-supplied args. */
+  async #testInvoke(opts, run) {
+    const auth = await this.#testAuth(opts);
+    const container = this.#options.root.createChild("request");
+    const args = {
+      ctx: container.ctx,
+      sessionId: opts.sessionId ?? null,
+      auth,
+      signal: opts.signal ?? new AbortController().signal,
+      log: () => {
+      }
+    };
+    try {
+      return await run(container.ctx, args);
+    } finally {
+      await container.dispose().catch((err) => this.#options.logger.error("Error disposing MCP request scope:", err));
+    }
+  }
+  /** Runs the project's `authenticate` handler for a test token, if configured. */
+  async #testAuth(opts) {
+    if (!this.#options.auth || opts.token === void 0) return null;
+    return this.#options.auth.authenticate({
+      ctx: this.#options.root.ctx,
+      req: { headers: { authorization: `Bearer ${opts.token}` } },
+      token: opts.token,
+      resource: `http://localhost${this.path}`
+    });
+  }
+  /** Finds the resource whose URI or template matches, extracting variables. */
+  #matchResource(uri) {
+    for (const resource of this.#options.scan.resources) {
+      if (!isUriTemplate(resource.uri)) {
+        if (resource.uri === uri) return { resource, params: {} };
+        continue;
+      }
+      const params = matchUriTemplate(resource.uri, uri);
+      if (params) return { resource, params };
+    }
+    return null;
+  }
   /** Closes every open connection. */
   async close() {
     const ids = [...this.#live.keys()];
@@ -1258,6 +1339,31 @@ Underlying error: ${err.message}`
     }
   }
 };
+function parseMcpInput(schema, input) {
+  if (!schema) return input ?? {};
+  if (typeof schema.parse === "function") {
+    return schema.parse(input ?? {});
+  }
+  const raw = input ?? {};
+  const out = {};
+  for (const [key, field] of Object.entries(schema)) {
+    out[key] = field.parse(raw[key]);
+  }
+  return out;
+}
+function matchUriTemplate(template, uri) {
+  const names = uriTemplateVariables(template);
+  const pattern = new RegExp(
+    "^" + template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{[^}]+\\\}/g, "([^/]+)") + "$"
+  );
+  const match = pattern.exec(uri);
+  if (!match) return null;
+  const params = {};
+  names.forEach((name, i) => {
+    params[name] = decodeURIComponent(match[i + 1]);
+  });
+  return params;
+}
 function annotationsOf(meta) {
   const annotations = {};
   if (typeof meta.readOnly === "boolean") annotations.readOnlyHint = meta.readOnly;
@@ -1398,6 +1504,17 @@ var Registry = class {
         [existing.file, provider.file]
       );
     }
+    this.#providers.set(provider.key, provider);
+  }
+  /**
+   * Replaces (or adds) a provider unconditionally, bypassing the duplicate-key
+   * guard `add` enforces.
+   *
+   * This is the seam the testing layer uses to swap `ctx.db` or `ctx.auth` for
+   * a fake — the one thing a test needs that production forbids. It is not part
+   * of the normal boot path: the scanner only ever calls `add`.
+   */
+  override(provider) {
     this.#providers.set(provider.key, provider);
   }
   get(key) {
@@ -2192,6 +2309,26 @@ var WsRuntime = class {
       void this.#open(ws2, req, route2, match.params);
     });
   }
+  /**
+   * Opens a connection over a caller-supplied socket, bypassing the HTTP
+   * upgrade. Returns false when no `ws/` handler matches the path, so the
+   * testing layer can turn that into a clear error. Not part of the serving
+   * path — {@link handleUpgrade} is.
+   */
+  openTestConnection(path, socket) {
+    const url = new URL(path, "http://localhost");
+    const match = this.#options.sockets.match("GET", url.pathname);
+    const route2 = match ? this.#options.handlers.get(match.route.path) : void 0;
+    if (!match || !route2) return false;
+    const raw = {
+      method: "GET",
+      url: path,
+      headers: { host: "localhost" },
+      socket: {}
+    };
+    void this.#open(socket, raw, route2, match.params);
+    return true;
+  }
   async #open(socket, raw, route2, params) {
     const container = this.#options.root.createChild("request");
     const entry = { socket, container };
@@ -2426,6 +2563,20 @@ async function createApp(options2 = {}) {
       value: logger,
       isFactory: false
     });
+  }
+  if (options2.overrides) {
+    for (const [key, value] of Object.entries(options2.overrides)) {
+      const existing = scan.registry.get(key);
+      const isFactory = typeof value === "function";
+      scan.registry.override({
+        key,
+        kind: existing?.kind ?? "di",
+        lifetime: existing?.lifetime ?? "singleton",
+        file: "<override>",
+        isFactory,
+        ...isFactory ? { factory: value } : { value }
+      });
+    }
   }
   const root = new Container(scan.registry, "singleton");
   await root.ensure();

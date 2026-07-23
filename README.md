@@ -32,6 +32,7 @@ and injectables, fully typed, with zero manual registration.
 - 🔌 **WebSockets included.** Same conventions, `[param]` segments and all.
 - 🧠 **MCP servers too.** Drop a file in `mcp/tools/` and your app is a Model Context Protocol server.
 - 🤝 **Adopts incrementally.** Mount Clove in an app you already have and migrate routes over at your own pace.
+- 🧪 **Testable in memory.** `clovejs/testing` boots your app with no port and lets you swap any dependency for a fake.
 - 🤖 **Agent-ready.** `npx clove skills` teaches your AI editor the conventions.
 
 ```bash
@@ -57,6 +58,7 @@ reference and deployment notes. Sources live in [`docs/`](./docs).
 - 🔌 [WebSockets](#websockets)
 - 🧠 [MCP servers](#mcp-servers)
 - 🍪 [Sessions](#sessions)
+- 🧪 [Testing](#testing)
 - 🤝 [Bootstrap and Express interop](#bootstrap-and-express-interop)
 - 🧪 [Example](#example)
 - ⌨️ [CLI](#cli)
@@ -428,6 +430,33 @@ The default store keeps sessions in memory, which is fine for a single process.
 To use something else, define `services/sessionStore.ts` returning an object
 with `get`, `set`, `touch` and `destroy` — it is picked up automatically.
 
+## Testing
+
+`clovejs/testing` boots your project **in memory** — no port, no socket — and
+dispatches through the real router, middleware chain, DI and JSON rules. The one
+thing it adds that production forbids is swapping a dependency for a fake. It
+bundles no runner; use Vitest, Jest or `node:test`.
+
+```ts
+import { createTestApp } from "clovejs/testing"
+
+const app = await createTestApp({
+  overrides: { db: fakeDb },   // any injectable, by its ctx key, fully typed
+})
+
+const res = await app.get("/api/v1/users/1")
+// res.status, res.json, res.headers, res.cookies — cookies persist across calls
+
+await app.mcp.callTool("searchNotes", { query: "clove" })   // MCP, no transport
+const socket = app.ws.connect("/ws/echo")                    // WebSockets, in memory
+
+await app.close()   // runs the real shutdown path, onDestroy hooks and all
+```
+
+For a single handler in isolation there is `runHandler(def, { params, body, ctx })`,
+with `createMockCtx()` and `runMiddleware()` alongside it. Full guide:
+[docs/guide/testing.md](./docs/guide/testing.md).
+
 ## Bootstrap and Express interop
 
 ```ts
@@ -454,7 +483,7 @@ route at a time.
 
 ## Examples
 
-Four runnable apps live in [`examples/`](./examples):
+Five runnable apps live in [`examples/`](./examples):
 
 | Example | Covers |
 | --- | --- |
@@ -462,6 +491,7 @@ Four runnable apps live in [`examples/`](./examples):
 | [`examples/mcp`](./examples/mcp) | An MCP server: tools, resources, prompts, session state across calls |
 | [`examples/websocket`](./examples/websocket) | Sockets, parameterised socket routes, broadcast, an HTTP → socket bridge |
 | [`examples/multi-tenant-mcp`](./examples/multi-tenant-mcp) | A multi-tenant MCP server: OAuth 2.1 bearer tokens, RFC 9728 discovery, per-tenant session isolation |
+| [`examples/testing`](./examples/testing) | A full test suite: in-memory integration tests, dependency overrides, the MCP and WebSocket harnesses, and unit helpers |
 
 Start with the REST one:
 

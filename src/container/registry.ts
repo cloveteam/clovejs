@@ -37,6 +37,18 @@ export class Registry {
     this.#providers.set(provider.key, provider)
   }
 
+  /**
+   * Replaces (or adds) a provider unconditionally, bypassing the duplicate-key
+   * guard `add` enforces.
+   *
+   * This is the seam the testing layer uses to swap `ctx.db` or `ctx.auth` for
+   * a fake — the one thing a test needs that production forbids. It is not part
+   * of the normal boot path: the scanner only ever calls `add`.
+   */
+  override(provider: Provider): void {
+    this.#providers.set(provider.key, provider)
+  }
+
   get(key: string): Provider | undefined {
     return this.#providers.get(key)
   }

@@ -5,9 +5,39 @@ import type { Container } from "../container/container.js"
 import type { Logger } from "../container/logger.js"
 import { CloveBootError, isHttpError } from "../errors.js"
 import type { SessionManager } from "../session/index.js"
+import type { RuntimeCtx } from "../types.js"
 import { errorText, isRecoverable, toPromptMessages, toResourceContents, toToolContent } from "./content.js"
-import { isUriTemplate } from "./paths.js"
-import type { McpAuth, McpAuthInfo, McpProtectedResourceMetadata, McpScan, McpToolArgs } from "./types.js"
+import { isUriTemplate, uriTemplateVariables } from "./paths.js"
+import type {
+  InputSchema,
+  McpAuth,
+  McpAuthInfo,
+  McpProtectedResourceMetadata,
+  McpScan,
+  McpToolArgs,
+} from "./types.js"
+
+/** Options accepted by the programmatic (test) entry points. */
+export interface McpInvokeOptions {
+  /** Bearer token, run through `mcp/auth.ts` to produce `args.auth`. */
+  token?: string
+  /** The session id handlers read as `args.sessionId`. */
+  sessionId?: string
+  /** Aborts the call; defaults to a fresh, never-aborted signal. */
+  signal?: AbortSignal
+}
+
+/** A resource read, as returned to a test caller. */
+export interface McpResourceResult {
+  uri: string
+  mimeType: string | null
+  /** The handler's return value, untouched. */
+  result: unknown
+  /** The value normalised into MCP resource contents. */
+  contents: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }>
+  /** Shorthand for the first text content, present for the common string case. */
+  text: string | undefined
+}
 
 export const MCP_SESSION_HEADER = "mcp-session-id"
 
@@ -487,6 +517,94 @@ export class McpRuntime {
     }
   }
 
+  // --- Programmatic entry points (testing) ---------------------------------
+  //
+  // These run a tool, resource or prompt handler directly against a fresh
+  // request-scoped container — the same lifecycle the transport drives, minus
+  // the JSON-RPC wire. Unlike the transport paths, a thrown error propagates
+  // untouched (an `HttpError` stays an `HttpError`) so a test can assert on it.
+
+  /** Runs a tool by name and returns the handler's raw result. */
+  async callTool(name: string, input: unknown = {}, opts: McpInvokeOptions = {}): Promise<unknown> {
+    const tool = this.#options.scan.tools.find((t) => t.name === name)
+    if (!tool) throw new Error(`No MCP tool named "${name}".`)
+    const parsed = parseMcpInput(tool.input, input)
+    return this.#testInvoke(opts, (ctx, args) => tool.handler(parsed, ctx, args))
+  }
+
+  /** Runs a prompt by name and returns the handler's raw result. */
+  async getPrompt(name: string, input: unknown = {}, opts: McpInvokeOptions = {}): Promise<unknown> {
+    const prompt = this.#options.scan.prompts.find((p) => p.name === name)
+    if (!prompt) throw new Error(`No MCP prompt named "${name}".`)
+    const parsed = parseMcpInput(prompt.input, input)
+    return this.#testInvoke(opts, (ctx, args) => prompt.handler(parsed, ctx, args))
+  }
+
+  /** Reads a resource by URI, matching static URIs and templates alike. */
+  async readResource(uri: string, opts: McpInvokeOptions = {}): Promise<McpResourceResult> {
+    const matched = this.#matchResource(uri)
+    if (!matched) throw new Error(`No MCP resource matches "${uri}".`)
+    const { resource, params } = matched
+    const result = await this.#testInvoke(opts, (ctx, args) =>
+      resource.handler(params, ctx, { ...args, uri }),
+    )
+    const contents = toResourceContents(result, uri, resource.mimeType)
+    return {
+      uri,
+      mimeType: resource.mimeType,
+      result,
+      contents,
+      text: contents.find((c) => c.text !== undefined)?.text,
+    }
+  }
+
+  /** Runs one handler in a throwaway request scope with test-supplied args. */
+  async #testInvoke<T>(
+    opts: McpInvokeOptions,
+    run: (ctx: RuntimeCtx, args: McpToolArgs) => T | Promise<T>,
+  ): Promise<T> {
+    const auth = await this.#testAuth(opts)
+    const container = this.#options.root.createChild("request")
+    const args: McpToolArgs = {
+      ctx: container.ctx,
+      sessionId: opts.sessionId ?? null,
+      auth,
+      signal: opts.signal ?? new AbortController().signal,
+      log: () => {},
+    }
+    try {
+      return await run(container.ctx, args)
+    } finally {
+      await container
+        .dispose()
+        .catch((err) => this.#options.logger.error("Error disposing MCP request scope:", err))
+    }
+  }
+
+  /** Runs the project's `authenticate` handler for a test token, if configured. */
+  async #testAuth(opts: McpInvokeOptions): Promise<McpAuthInfo | null> {
+    if (!this.#options.auth || opts.token === undefined) return null
+    return this.#options.auth.authenticate({
+      ctx: this.#options.root.ctx,
+      req: { headers: { authorization: `Bearer ${opts.token}` } } as IncomingMessage,
+      token: opts.token,
+      resource: `http://localhost${this.path}`,
+    })
+  }
+
+  /** Finds the resource whose URI or template matches, extracting variables. */
+  #matchResource(uri: string): { resource: McpScan["resources"][number]; params: Record<string, string> } | null {
+    for (const resource of this.#options.scan.resources) {
+      if (!isUriTemplate(resource.uri)) {
+        if (resource.uri === uri) return { resource, params: {} }
+        continue
+      }
+      const params = matchUriTemplate(resource.uri, uri)
+      if (params) return { resource, params }
+    }
+    return null
+  }
+
   /** Closes every open connection. */
   async close(): Promise<void> {
     const ids = [...this.#live.keys()]
@@ -527,6 +645,45 @@ export class McpRuntime {
       )
     }
   }
+}
+
+/**
+ * Validates and applies defaults to a tool/prompt input the way a real client
+ * would see it. Accepts a `z.object(...)` schema or the bare `{ a: z.string() }`
+ * shape it wraps; a handler with no schema takes its argument untouched.
+ */
+function parseMcpInput(schema: InputSchema | null, input: unknown): unknown {
+  if (!schema) return input ?? {}
+  if (typeof (schema as { parse?: unknown }).parse === "function") {
+    return (schema as { parse(v: unknown): unknown }).parse(input ?? {})
+  }
+  const raw = (input ?? {}) as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const [key, field] of Object.entries(schema as Record<string, { parse(v: unknown): unknown }>)) {
+    out[key] = field.parse(raw[key])
+  }
+  return out
+}
+
+/**
+ * Matches a concrete URI against a template like `notes://{id}`, returning the
+ * captured variables or null. Templates match a single path segment per
+ * variable, mirroring how the router treats `[param]`.
+ */
+function matchUriTemplate(template: string, uri: string): Record<string, string> | null {
+  const names = uriTemplateVariables(template)
+  const pattern = new RegExp(
+    "^" +
+      template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{[^}]+\\\}/g, "([^/]+)") +
+      "$",
+  )
+  const match = pattern.exec(uri)
+  if (!match) return null
+  const params: Record<string, string> = {}
+  names.forEach((name, i) => {
+    params[name] = decodeURIComponent(match[i + 1]!)
+  })
+  return params
 }
 
 function annotationsOf(meta: Readonly<Record<string, unknown>>): {

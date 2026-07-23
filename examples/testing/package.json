@@ -1,0 +1,23 @@
+{
+  "name": "clovejs-example-testing",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A runnable CloveJS app with a full test suite: in-memory integration tests, dependency overrides, MCP and WebSocket harnesses, and unit-level helpers.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/src/main.js",
+    "routes": "clove routes",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "clovejs": "file:../..",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
+  }
+}
