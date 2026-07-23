@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Registry, type Provider } from "../container/registry.js"
+import { validateCachePolicy } from "../cache/runtime.js"
 import { CloveBootError } from "../errors.js"
 import { deriveMcpName, deriveResourceUri } from "../mcp/paths.js"
 import { assertPromptShape, toRawShape } from "../mcp/schema.js"
@@ -13,6 +14,8 @@ import type {
 } from "../mcp/types.js"
 import { RouterTrie } from "../router/trie.js"
 import {
+  CACHE,
+  INVALIDATES,
   META,
   definitionKind,
   type DiDefinition,
@@ -371,11 +374,31 @@ async function loadRoutes(
       )
     }
 
+    if (route[CACHE] && !["GET", "HEAD"].includes(route.method)) {
+      throw new CloveBootError(
+        `Only GET and HEAD routes can be cached, but this route uses ` +
+          `${route.method}. Use .invalidates(...) on mutation routes instead.`,
+        [file.absolute],
+      )
+    }
+    if (route[CACHE]) {
+      try {
+        validateCachePolicy(route[CACHE])
+      } catch (err) {
+        throw new CloveBootError(
+          err instanceof Error ? err.message : "Invalid route cache policy.",
+          [file.absolute],
+        )
+      }
+    }
+
     routes.add({
       method: route.method,
       path: join("/", mount, derived.path).split("\\").join("/"),
       handler: route.handler,
       meta: Object.freeze({ ...route[META] }),
+      ...(route[CACHE] ? { cache: Object.freeze({ ...route[CACHE] }) } : {}),
+      ...(route[INVALIDATES] ? { invalidates: route[INVALIDATES] } : {}),
       file: file.absolute,
     })
   }

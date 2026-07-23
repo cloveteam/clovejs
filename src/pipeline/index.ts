@@ -1,4 +1,5 @@
 import type { Container } from "../container/container.js"
+import type { CacheRuntime, PipelineCompletion } from "../cache/runtime.js"
 import type { Logger } from "../container/logger.js"
 import { isHttpError } from "../errors.js"
 import type { CloveRequest } from "../http/request.js"
@@ -15,6 +16,7 @@ export interface PipelineOptions {
   logger: Logger
   /** The registered template engine, or null when the project has none. */
   views: ViewEngine | null
+  cache?: CacheRuntime
 }
 
 /**
@@ -30,11 +32,26 @@ export async function runPipeline(
   res: CloveResponse,
   container: Container,
   options: PipelineOptions,
-): Promise<void> {
+): Promise<PipelineCompletion> {
   const ctx = container.ctx as RuntimeCtx
+  let handlerExecuted = false
+  let result: unknown
 
   try {
-    const result = await composeChain(route, req, res, ctx, options.middlewares)
+    result = await composeChain(
+      route,
+      req,
+      res,
+      ctx,
+      options.middlewares,
+      async () => {
+        handlerExecuted = true
+        const execute = () => Promise.resolve(route.handler(req, res, ctx))
+        return options.cache
+          ? options.cache.execute(route, req, res, ctx, execute)
+          : execute()
+      },
+    )
     if (isViewResult(result)) {
       await applyViewResult(result, res, ctx, options.views)
     } else if (jsonEnabled(route, res)) {
@@ -44,8 +61,10 @@ export async function runPipeline(
       if (result !== undefined && result !== null) res.send(result)
       else res.end()
     }
+    return { result, handlerExecuted }
   } catch (err) {
     writeError(err, res, options)
+    return { result, error: err, handlerExecuted }
   }
 }
 
@@ -59,6 +78,7 @@ function composeChain(
   res: CloveResponse,
   ctx: RuntimeCtx,
   middlewares: LoadedMiddleware[],
+  executeRoute: () => Promise<unknown>,
 ): Promise<unknown> {
   let index = -1
 
@@ -71,7 +91,7 @@ function composeChain(
     index = i
 
     if (i === middlewares.length) {
-      return await route.handler(req, res, ctx)
+      return await executeRoute()
     }
 
     const mw = middlewares[i]!

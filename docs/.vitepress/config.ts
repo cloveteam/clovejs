@@ -72,6 +72,7 @@ export default defineConfig({
           items: [
             { text: "Middlewares", link: "/guide/middlewares" },
             { text: "The JSON middleware", link: "/guide/json-middleware" },
+            { text: "Caching", link: "/guide/caching" },
             { text: "HTML templates", link: "/guide/templates" },
             { text: "Errors", link: "/guide/errors" },
           ],

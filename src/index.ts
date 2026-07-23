@@ -34,11 +34,25 @@ export type { CookieOptions } from "./http/cookies.js"
 export { MemorySessionStore } from "./session/store.js"
 export type { SessionStore } from "./session/store.js"
 
+export { MemoryCacheStore } from "./cache/store.js"
+export type {
+  CacheEntry,
+  CacheStore,
+  CacheStoreSetOptions,
+} from "./cache/store.js"
+
 export { createLogger } from "./container/logger.js"
 export type { Logger, LogLevel } from "./container/logger.js"
 
 export type {
   Ctx,
+  CacheContext,
+  CacheController,
+  CacheDuration,
+  CacheInvalidation,
+  CacheInvalidationContext,
+  CachePolicy,
+  ClientCachePolicy,
   DiSpec,
   HttpMethod,
   Lifetime,

@@ -1,5 +1,9 @@
 import { serveSse } from "./http/sse.js"
 import {
+  CACHE,
+  type CacheInvalidation,
+  type CachePolicy,
+  INVALIDATES,
   KIND,
   META,
   type DiDefinition,
@@ -31,6 +35,14 @@ function route(method: HttpMethod | "ALL", handler: RouteHandlerFn): RouteDefini
     handler,
     meta(meta: RouteMeta) {
       Object.assign(def[META], meta)
+      return def
+    },
+    cache(policy: CachePolicy) {
+      def[CACHE] = policy
+      return def
+    },
+    invalidates(tags: CacheInvalidation) {
+      def[INVALIDATES] = tags
       return def
     },
   }

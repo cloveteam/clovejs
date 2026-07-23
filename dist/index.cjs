@@ -35,6 +35,7 @@ __export(src_exports, {
   CloveRequest: () => CloveRequest,
   CloveResponse: () => CloveResponse,
   HttpError: () => HttpError,
+  MemoryCacheStore: () => MemoryCacheStore,
   MemorySessionStore: () => MemorySessionStore,
   all: () => all,
   bootstrap: () => bootstrap,
@@ -219,6 +220,8 @@ function serveSse(handler, options2) {
 // src/types.ts
 var KIND = /* @__PURE__ */ Symbol.for("clovejs.kind");
 var META = /* @__PURE__ */ Symbol.for("clovejs.meta");
+var CACHE = /* @__PURE__ */ Symbol.for("clovejs.cache");
+var INVALIDATES = /* @__PURE__ */ Symbol.for("clovejs.invalidates");
 var VIEW = /* @__PURE__ */ Symbol.for("clovejs.view");
 function isViewResult(value) {
   return typeof value === "object" && value !== null && VIEW in value;
@@ -239,6 +242,14 @@ function route(method, handler) {
     handler,
     meta(meta) {
       Object.assign(def[META], meta);
+      return def;
+    },
+    cache(policy) {
+      def[CACHE] = policy;
+      return def;
+    },
+    invalidates(tags) {
+      def[INVALIDATES] = tags;
       return def;
     }
   };
@@ -319,6 +330,362 @@ ${files.map((f) => `  - ${f}`).join("\n")}` : message);
 
 // src/bootstrap.ts
 var import_node_http = require("http");
+
+// src/cache/runtime.ts
+var import_node_crypto = require("crypto");
+var import_node_v8 = require("v8");
+var CacheRuntime = class {
+  store;
+  #logger;
+  #pending = /* @__PURE__ */ new Map();
+  #transactions = /* @__PURE__ */ new WeakMap();
+  #generation = 0;
+  constructor(store, logger) {
+    this.store = store;
+    this.#logger = logger;
+  }
+  async execute(route2, req, res, ctx, handler) {
+    const policy = route2.cache;
+    if (!policy || !this.#canUse(policy, req, res)) return handler();
+    const context = { route: route2, req, res, ctx };
+    let key;
+    try {
+      key = await this.#key(policy, context);
+    } catch (err) {
+      this.#logger.error("Failed to build route cache key:", err);
+      return handler();
+    }
+    let existing;
+    try {
+      existing = await this.store.get(key);
+    } catch (err) {
+      this.#logger.error("Route cache read failed:", err);
+      return handler();
+    }
+    const now = Date.now();
+    if (existing && existing.freshUntil > now) {
+      return this.#replay(existing, res);
+    }
+    const pending = this.#pending.get(key);
+    if (pending) {
+      if (existing && existing.staleUntil > now) {
+        return this.#replay(existing, res);
+      }
+      const refreshed = await pending.promise;
+      if (refreshed) return this.#replay(refreshed, res);
+      return handler();
+    }
+    const deferred = createDeferred();
+    this.#pending.set(key, deferred);
+    const checkpoint = res.checkpoint();
+    try {
+      const result = await handler();
+      let payload;
+      try {
+        payload = encodeResult(result);
+      } catch {
+        this.#finishPending(key, deferred, void 0);
+        return result;
+      }
+      this.#transactions.set(res, {
+        key,
+        policy,
+        context,
+        result,
+        payload,
+        response: res.deltaSince(checkpoint),
+        deferred,
+        generation: this.#generation
+      });
+      return result;
+    } catch (err) {
+      this.#finishPending(key, deferred, void 0);
+      throw err;
+    }
+  }
+  /**
+   * Publishes a captured handler outcome only after every interceptor has
+   * unwound successfully and the final response is known to be cacheable.
+   */
+  async complete(res, completion) {
+    const transaction = this.#transactions.get(res);
+    if (!transaction) return;
+    this.#transactions.delete(res);
+    if (completion.error !== void 0 || res.statusCode !== 200 || !res.replayable || transaction.response.headers.some(([name]) => name === "set-cookie") || transaction.generation !== this.#generation) {
+      this.#finishPending(transaction.key, transaction.deferred, void 0);
+      return;
+    }
+    try {
+      const now = Date.now();
+      const ttl = durationMs(transaction.policy.ttl);
+      const stale = durationMs(transaction.policy.staleWhileRevalidate ?? 0);
+      const tags = await resolveTags(transaction.policy, {
+        ...transaction.context,
+        result: transaction.result
+      });
+      const entry = {
+        payload: transaction.payload,
+        response: transaction.response,
+        freshUntil: now + ttl,
+        staleUntil: now + ttl + stale
+      };
+      await this.store.set(transaction.key, entry, {
+        ttl: ttl + stale,
+        tags
+      });
+      this.#finishPending(transaction.key, transaction.deferred, entry);
+    } catch (err) {
+      this.#logger.error("Route cache write failed:", err);
+      this.#finishPending(transaction.key, transaction.deferred, void 0);
+    }
+  }
+  /** Applies browser/CDN headers and conditional request handling. */
+  applyClientPolicy(route2, req, res) {
+    const policy = route2.cache;
+    if (!policy || !res.replayable || res.statusCode !== 200) return;
+    if (policy.vary?.length) {
+      const existing = String(res.getHeader("vary") ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+      const vary = /* @__PURE__ */ new Set([...existing, ...policy.vary.map((name) => name.toLowerCase())]);
+      res.header("vary", [...vary].join(", "));
+    }
+    if (req.header("authorization") || req.header("cookie") || res.getHeader("set-cookie") !== void 0) {
+      res.header("cache-control", "private, no-store");
+      return;
+    }
+    if (policy.client === false) {
+      res.header("cache-control", "no-store");
+      return;
+    }
+    res.header("cache-control", cacheControl(policy));
+    const body = res.bodyBuffer();
+    if (!body) return;
+    const current = res.getHeader("etag");
+    const etag = current === void 0 ? `"${(0, import_node_crypto.createHash)("sha256").update(body).digest("base64url")}"` : String(current);
+    res.header("etag", etag);
+    if (etagMatches(req.header("if-none-match"), etag)) res.notModified();
+  }
+  /** Invalidates tags imperatively through `ctx.cache`. */
+  async invalidate(tags) {
+    const clean = uniqueTags(tags);
+    if (clean.length === 0) return;
+    this.#generation++;
+    await this.store.invalidateTags(clean);
+  }
+  /** Resolves and applies a mutation route's declarative invalidation. */
+  async invalidateRoute(invalidation, context) {
+    const tags = typeof invalidation === "function" ? await invalidation(context) : invalidation;
+    await this.invalidate(tags);
+  }
+  #canUse(policy, req, res) {
+    if (!res.replayable || res.sent) return false;
+    if ((req.header("authorization") || req.header("cookie")) && policy.scope !== "public" && !policy.key) {
+      return false;
+    }
+    return true;
+  }
+  async #key(policy, context) {
+    const { req, route: route2 } = context;
+    const query = [...req.url.searchParams.entries()].sort(([ak, av], [bk, bv]) => ak.localeCompare(bk) || av.localeCompare(bv));
+    const vary = (policy.vary ?? []).map((name) => [name.toLowerCase(), req.header(name) ?? ""]).sort(([a], [b]) => a.localeCompare(b));
+    const custom = policy.key ? await policy.key(context) : "";
+    const identity = JSON.stringify({
+      method: req.method,
+      route: route2.path,
+      params: Object.entries(req.params).sort(([a], [b]) => a.localeCompare(b)),
+      query,
+      vary,
+      custom
+    });
+    return (0, import_node_crypto.createHash)("sha256").update(identity).digest("base64url");
+  }
+  #replay(entry, res) {
+    const result = decodeResult(entry.payload);
+    res.applyDelta(entry.response);
+    return result;
+  }
+  #finishPending(key, deferred, entry) {
+    if (this.#pending.get(key) === deferred) this.#pending.delete(key);
+    deferred.resolve(entry);
+  }
+};
+function validateCachePolicy(policy) {
+  durationMs(policy.ttl);
+  if (policy.scope !== void 0 && !["public", "private"].includes(policy.scope)) {
+    throw new TypeError(`Cache scope must be "public" or "private".`);
+  }
+  if (policy.staleWhileRevalidate !== void 0) {
+    durationMs(policy.staleWhileRevalidate);
+  }
+  for (const value of [
+    policy.client && policy.client.maxAge,
+    policy.client && policy.client.sharedMaxAge,
+    policy.client && policy.client.staleWhileRevalidate
+  ]) {
+    if (value !== false && value !== void 0) durationMs(value);
+  }
+  if (policy.client && policy.client.private && policy.client.sharedMaxAge !== void 0) {
+    throw new TypeError("A private client cache cannot declare sharedMaxAge.");
+  }
+}
+function durationMs(value) {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new TypeError(`Cache duration must be a non-negative finite number.`);
+    }
+    return value;
+  }
+  const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/.exec(value);
+  if (!match) {
+    throw new TypeError(
+      `Invalid cache duration "${value}". Use milliseconds or values such as "30s", "5m" or "1h".`
+    );
+  }
+  const multiplier = { ms: 1, s: 1e3, m: 6e4, h: 36e5, d: 864e5 }[match[2]];
+  return Number(match[1]) * multiplier;
+}
+function encodeResult(result) {
+  if (isViewResult(result)) {
+    return (0, import_node_v8.serialize)({ kind: "view", template: result.template, data: result.data });
+  }
+  return (0, import_node_v8.serialize)({ kind: "value", value: result });
+}
+function decodeResult(payload) {
+  const decoded = (0, import_node_v8.deserialize)(payload);
+  if (decoded.kind === "view") {
+    return { [VIEW]: true, template: decoded.template, data: decoded.data };
+  }
+  return decoded.value;
+}
+async function resolveTags(policy, context) {
+  if (!policy.tags) return [];
+  const tags = typeof policy.tags === "function" ? await policy.tags(context) : policy.tags;
+  return uniqueTags(tags);
+}
+function uniqueTags(tags) {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+}
+function cacheControl(policy) {
+  const client = policy.client;
+  if (!client) return "private, no-cache";
+  const isPrivate = client.private ?? client.sharedMaxAge === void 0;
+  const parts = [isPrivate ? "private" : "public"];
+  if (client.maxAge !== void 0) {
+    parts.push(`max-age=${Math.floor(durationMs(client.maxAge) / 1e3)}`);
+  } else {
+    parts.push("max-age=0");
+  }
+  if (client.sharedMaxAge !== void 0) {
+    parts.push(`s-maxage=${Math.floor(durationMs(client.sharedMaxAge) / 1e3)}`);
+  }
+  if (client.staleWhileRevalidate !== void 0) {
+    parts.push(
+      `stale-while-revalidate=${Math.floor(
+        durationMs(client.staleWhileRevalidate) / 1e3
+      )}`
+    );
+  }
+  if (client.immutable) parts.push("immutable");
+  return parts.join(", ");
+}
+function etagMatches(header, etag) {
+  if (!header) return false;
+  const target = etag.replace(/^W\//, "");
+  return header.split(",").some((candidate) => {
+    const value = candidate.trim();
+    return value === "*" || value.replace(/^W\//, "") === target;
+  });
+}
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+// src/cache/store.ts
+var MemoryCacheStore = class {
+  #entries = /* @__PURE__ */ new Map();
+  #tagKeys = /* @__PURE__ */ new Map();
+  async get(key) {
+    const entry = this.#entries.get(key);
+    if (!entry) return void 0;
+    if (entry.expiresAt <= Date.now()) {
+      this.#drop(key, entry);
+      return void 0;
+    }
+    return cloneEntry(entry.value);
+  }
+  async set(key, value, options2) {
+    const previous = this.#entries.get(key);
+    if (previous) this.#drop(key, previous);
+    const tags = new Set(options2.tags);
+    const entry = {
+      value: cloneEntry(value),
+      expiresAt: Date.now() + options2.ttl,
+      tags
+    };
+    this.#entries.set(key, entry);
+    for (const tag of tags) {
+      let keys = this.#tagKeys.get(tag);
+      if (!keys) {
+        keys = /* @__PURE__ */ new Set();
+        this.#tagKeys.set(tag, keys);
+      }
+      keys.add(key);
+    }
+  }
+  async delete(key) {
+    const entry = this.#entries.get(key);
+    if (entry) this.#drop(key, entry);
+  }
+  async invalidateTags(tags) {
+    const keys = /* @__PURE__ */ new Set();
+    for (const tag of tags) {
+      for (const key of this.#tagKeys.get(tag) ?? []) keys.add(key);
+    }
+    for (const key of keys) {
+      const entry = this.#entries.get(key);
+      if (entry) this.#drop(key, entry);
+    }
+  }
+  clear() {
+    this.#entries.clear();
+    this.#tagKeys.clear();
+  }
+  get size() {
+    return this.#entries.size;
+  }
+  #drop(key, entry) {
+    this.#entries.delete(key);
+    for (const tag of entry.tags) {
+      const keys = this.#tagKeys.get(tag);
+      keys?.delete(key);
+      if (keys?.size === 0) this.#tagKeys.delete(tag);
+    }
+  }
+};
+function isCacheStore(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  return typeof v.get === "function" && typeof v.set === "function" && typeof v.delete === "function" && typeof v.invalidateTags === "function";
+}
+function cloneEntry(entry) {
+  return {
+    payload: Buffer.from(entry.payload),
+    response: {
+      ...entry.response,
+      headers: entry.response.headers.map(([name, value]) => [
+        name,
+        Array.isArray(value) ? [...value] : value
+      ]),
+      ...entry.response.removedHeaders ? { removedHeaders: [...entry.response.removedHeaders] } : {},
+      ...entry.response.body ? { body: Buffer.from(entry.response.body) } : {}
+    },
+    freshUntil: entry.freshUntil,
+    staleUntil: entry.staleUntil
+  };
+}
 
 // src/container/container.ts
 var SCOPE_DEPTH = {
@@ -647,7 +1014,7 @@ async function parseBody(req, limit = DEFAULT_BODY_LIMIT) {
 }
 
 // src/http/cookies.ts
-var import_node_crypto = require("crypto");
+var import_node_crypto2 = require("crypto");
 function parseCookies(header) {
   const out = {};
   if (!header) return out;
@@ -682,7 +1049,7 @@ function serializeCookie(name, value, opts = {}) {
   return str;
 }
 function sign(value, secret) {
-  const mac = (0, import_node_crypto.createHmac)("sha256", secret).update(value).digest("base64url");
+  const mac = (0, import_node_crypto2.createHmac)("sha256", secret).update(value).digest("base64url");
   return `${value}.${mac}`;
 }
 function unsign(signed, secret) {
@@ -690,11 +1057,11 @@ function unsign(signed, secret) {
   if (idx < 0) return null;
   const value = signed.slice(0, idx);
   const mac = signed.slice(idx + 1);
-  const expected = (0, import_node_crypto.createHmac)("sha256", secret).update(value).digest("base64url");
+  const expected = (0, import_node_crypto2.createHmac)("sha256", secret).update(value).digest("base64url");
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length) return null;
-  return (0, import_node_crypto.timingSafeEqual)(a, b) ? value : null;
+  return (0, import_node_crypto2.timingSafeEqual)(a, b) ? value : null;
 }
 
 // src/http/request.ts
@@ -785,26 +1152,58 @@ var MIME_SHORTHAND = {
   octet: "application/octet-stream"
 };
 var CloveResponse = class {
-  raw;
+  #raw;
   /** True once a body has been written through this wrapper or the raw stream. */
   #sent = false;
   /** True when the handler set a content type itself, whatever it was. */
   #typeExplicit = false;
-  constructor(raw) {
-    this.raw = raw;
+  #buffered;
+  #rawAccessed = false;
+  #statusCode;
+  #headers = /* @__PURE__ */ new Map();
+  #body;
+  constructor(raw, options2 = {}) {
+    this.#raw = raw;
+    this.#buffered = options2.buffered ?? false;
+    this.#statusCode = raw.statusCode;
+    if (this.#buffered) {
+      for (const [name, value] of Object.entries(raw.getHeaders())) {
+        if (value !== void 0) {
+          this.#headers.set(name.toLowerCase(), cloneHeader(value));
+        }
+      }
+    }
+  }
+  /**
+   * The underlying Node response. Reading it opts out of buffering and caching,
+   * because writes made through the raw stream cannot be replayed safely.
+   */
+  get raw() {
+    if (this.#buffered && !this.#rawAccessed) {
+      this.#rawAccessed = true;
+      this.#flushHeaders();
+      if (this.#sent && !this.#raw.writableEnded) this.#raw.end(this.#body);
+    }
+    return this.#raw;
+  }
+  /** False after the raw Node response has been accessed. */
+  get replayable() {
+    return this.#buffered && !this.#rawAccessed;
   }
   get sent() {
-    return this.#sent || this.raw.writableEnded || this.raw.headersSent;
+    if (this.#buffered && !this.#rawAccessed) return this.#sent;
+    return this.#sent || this.#raw.writableEnded || this.#raw.headersSent;
   }
   /** Whether the handler chose the content type rather than inheriting it. */
   get typeIsExplicit() {
     return this.#typeExplicit;
   }
   get statusCode() {
-    return this.raw.statusCode;
+    return this.#buffered && !this.#rawAccessed ? this.#statusCode : this.#raw.statusCode;
   }
   status(code) {
-    this.raw.statusCode = code;
+    if (this.#buffered && !this.#rawAccessed) this.#statusCode = code;
+    else this.#raw.statusCode = code;
     return this;
   }
   /**
@@ -815,28 +1214,45 @@ var CloveResponse = class {
    */
   type(value) {
     const resolved = MIME_SHORTHAND[value] ?? value;
-    this.raw.setHeader("content-type", resolved);
+    this.header("content-type", resolved);
     this.#typeExplicit = true;
     return this;
   }
   /** The content type currently set on the response, if any. */
   get contentType() {
-    const v = this.raw.getHeader("content-type");
+    const v = this.#buffered && !this.#rawAccessed ? this.#headers.get("content-type") : this.#raw.getHeader("content-type");
     return v === void 0 ? void 0 : String(v);
   }
   header(name, value) {
-    this.raw.setHeader(name, value);
+    if (this.#buffered && !this.#rawAccessed) {
+      this.#headers.set(name.toLowerCase(), cloneHeader(value));
+    } else {
+      this.#raw.setHeader(name, value);
+    }
     return this;
   }
   /** Alias of {@link header}, for readers coming from Express. */
   set(name, value) {
     return this.header(name, value);
   }
+  removeHeader(name) {
+    if (this.#buffered && !this.#rawAccessed) this.#headers.delete(name.toLowerCase());
+    else this.#raw.removeHeader(name);
+    return this;
+  }
+  getHeader(name) {
+    if (this.#buffered && !this.#rawAccessed) {
+      const value2 = this.#headers.get(name.toLowerCase());
+      return value2 === void 0 ? void 0 : cloneHeader(value2);
+    }
+    const value = this.#raw.getHeader(name);
+    return value === void 0 ? void 0 : value;
+  }
   cookie(name, value, opts = {}) {
-    const existing = this.raw.getHeader("set-cookie");
+    const existing = this.getHeader("set-cookie");
     const serialized = serializeCookie(name, value, opts);
     const list = Array.isArray(existing) ? [...existing, serialized] : existing ? [String(existing), serialized] : [serialized];
-    this.raw.setHeader("set-cookie", list);
+    this.header("set-cookie", list);
     return this;
   }
   clearCookie(name, opts = {}) {
@@ -860,36 +1276,118 @@ var CloveResponse = class {
     if (Buffer.isBuffer(body)) {
       if (!this.contentType) this.type("bin");
       this.#sent = true;
-      this.raw.end(body);
+      if (this.#buffered && !this.#rawAccessed) this.#body = Buffer.from(body);
+      else this.#raw.end(body);
       return this;
     }
     if (typeof body === "string") {
       if (!this.contentType) this.type("html");
       this.#sent = true;
-      this.raw.end(body);
+      if (this.#buffered && !this.#rawAccessed) this.#body = Buffer.from(body);
+      else this.#raw.end(body);
       return this;
     }
     return this.json(body);
   }
   json(body) {
     if (this.sent) return this;
-    if (!this.contentType) this.raw.setHeader("content-type", MIME_SHORTHAND.json);
+    if (!this.contentType) this.header("content-type", MIME_SHORTHAND.json);
     this.#sent = true;
-    this.raw.end(JSON.stringify(body));
+    const encoded = Buffer.from(JSON.stringify(body));
+    if (this.#buffered && !this.#rawAccessed) this.#body = encoded;
+    else this.#raw.end(encoded);
     return this;
   }
   /** Ends the response with no body. */
   end() {
     if (this.sent) return this;
     this.#sent = true;
-    this.raw.end();
+    if (!this.#buffered || this.#rawAccessed) this.#raw.end();
     return this;
   }
+  /** Captures the response state immediately before terminal handler execution. */
+  checkpoint() {
+    return {
+      statusCode: this.statusCode,
+      headers: new Map(
+        [...this.#headers].map(([name, value]) => [name, cloneHeader(value)])
+      ),
+      typeExplicit: this.#typeExplicit,
+      sent: this.sent
+    };
+  }
+  /** Returns only mutations made since a checkpoint, suitable for replay. */
+  deltaSince(checkpoint) {
+    const headers = [];
+    for (const [name, value] of this.#headers) {
+      if (!headersEqual(checkpoint.headers.get(name), value)) {
+        headers.push([name, cloneHeader(value)]);
+      }
+    }
+    const removedHeaders = [...checkpoint.headers.keys()].filter(
+      (name) => !this.#headers.has(name)
+    );
+    return {
+      ...this.statusCode !== checkpoint.statusCode ? { statusCode: this.statusCode } : {},
+      headers,
+      ...removedHeaders.length ? { removedHeaders } : {},
+      ...this.#typeExplicit !== checkpoint.typeExplicit ? { typeExplicit: this.#typeExplicit } : {},
+      ...!checkpoint.sent && this.#sent ? { sent: true, ...this.#body ? { body: Buffer.from(this.#body) } : {} } : {}
+    };
+  }
+  /** Applies mutations captured from an earlier terminal handler execution. */
+  applyDelta(delta) {
+    if (!this.replayable) return;
+    if (delta.statusCode !== void 0) this.#statusCode = delta.statusCode;
+    for (const [name, value] of delta.headers) {
+      this.#headers.set(name, cloneHeader(value));
+    }
+    for (const name of delta.removedHeaders ?? []) this.#headers.delete(name);
+    if (delta.typeExplicit !== void 0) this.#typeExplicit = delta.typeExplicit;
+    if (delta.sent) {
+      this.#sent = true;
+      this.#body = delta.body ? Buffer.from(delta.body) : void 0;
+    }
+  }
+  /** The finalized buffered body, used for ETag generation. */
+  bodyBuffer() {
+    return this.#body ? Buffer.from(this.#body) : void 0;
+  }
+  /** Replaces a buffered response with an empty conditional response. */
+  notModified() {
+    if (!this.replayable) return;
+    this.#statusCode = 304;
+    this.#body = void 0;
+    this.#sent = true;
+    this.#headers.delete("content-length");
+  }
+  /** Writes a buffered response to the underlying Node response exactly once. */
+  commit(options2 = {}) {
+    if (!this.#buffered || this.#rawAccessed || this.#raw.writableEnded) return;
+    this.#flushHeaders();
+    this.#raw.end(options2.omitBody ? void 0 : this.#body);
+  }
+  #flushHeaders() {
+    this.#raw.statusCode = this.#statusCode;
+    for (const [name, value] of this.#headers) {
+      this.#raw.setHeader(name, value);
+    }
+  }
 };
+function cloneHeader(value) {
+  return Array.isArray(value) ? [...value] : value;
+}
+function headersEqual(a, b) {
+  if (a === void 0) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return String(a) === String(b);
+}
 
 // src/mcp/runtime.ts
 var import_node_async_hooks = require("async_hooks");
-var import_node_crypto2 = require("crypto");
+var import_node_crypto3 = require("crypto");
 
 // src/mcp/content.ts
 function toToolContent(result) {
@@ -1137,7 +1635,7 @@ var McpRuntime = class {
       return true;
     }
     const transport = new sdk.StreamableHTTPServerTransport({
-      sessionIdGenerator: () => (0, import_node_crypto2.randomUUID)(),
+      sessionIdGenerator: () => (0, import_node_crypto3.randomUUID)(),
       onsessioninitialized: (sessionId) => {
         this.#live.set(sessionId, live);
         this.#options.logger.debug(`MCP session opened: ${sessionId}`);
@@ -1626,8 +2124,21 @@ async function applyViewResult(result, res, ctx, engine2) {
 // src/pipeline/index.ts
 async function runPipeline(route2, req, res, container, options2) {
   const ctx = container.ctx;
+  let handlerExecuted = false;
+  let result;
   try {
-    const result = await composeChain(route2, req, res, ctx, options2.middlewares);
+    result = await composeChain(
+      route2,
+      req,
+      res,
+      ctx,
+      options2.middlewares,
+      async () => {
+        handlerExecuted = true;
+        const execute = () => Promise.resolve(route2.handler(req, res, ctx));
+        return options2.cache ? options2.cache.execute(route2, req, res, ctx, execute) : execute();
+      }
+    );
     if (isViewResult(result)) {
       await applyViewResult(result, res, ctx, options2.views);
     } else if (jsonEnabled(route2, res)) {
@@ -1636,11 +2147,13 @@ async function runPipeline(route2, req, res, container, options2) {
       if (result !== void 0 && result !== null) res.send(result);
       else res.end();
     }
+    return { result, handlerExecuted };
   } catch (err) {
     writeError(err, res, options2);
+    return { result, error: err, handlerExecuted };
   }
 }
-function composeChain(route2, req, res, ctx, middlewares) {
+function composeChain(route2, req, res, ctx, middlewares, executeRoute) {
   let index = -1;
   const dispatch = async (i) => {
     if (i <= index) {
@@ -1650,7 +2163,7 @@ function composeChain(route2, req, res, ctx, middlewares) {
     }
     index = i;
     if (i === middlewares.length) {
-      return await route2.handler(req, res, ctx);
+      return await executeRoute();
     }
     const mw = middlewares[i];
     const args = {
@@ -2292,11 +2805,29 @@ async function loadRoutes(loader, dir, label, mount, routes, files) {
         [file.absolute]
       );
     }
+    if (route2[CACHE] && !["GET", "HEAD"].includes(route2.method)) {
+      throw new CloveBootError(
+        `Only GET and HEAD routes can be cached, but this route uses ${route2.method}. Use .invalidates(...) on mutation routes instead.`,
+        [file.absolute]
+      );
+    }
+    if (route2[CACHE]) {
+      try {
+        validateCachePolicy(route2[CACHE]);
+      } catch (err) {
+        throw new CloveBootError(
+          err instanceof Error ? err.message : "Invalid route cache policy.",
+          [file.absolute]
+        );
+      }
+    }
     routes.add({
       method: route2.method,
       path: (0, import_node_path3.join)("/", mount, derived.path).split("\\").join("/"),
       handler: route2.handler,
       meta: Object.freeze({ ...route2[META] }),
+      ...route2[CACHE] ? { cache: Object.freeze({ ...route2[CACHE] }) } : {},
+      ...route2[INVALIDATES] ? { invalidates: route2[INVALIDATES] } : {},
       file: file.absolute
     });
   }
@@ -2325,7 +2856,7 @@ function resolveSourceDir(rootDir) {
 }
 
 // src/session/index.ts
-var import_node_crypto3 = require("crypto");
+var import_node_crypto4 = require("crypto");
 
 // src/session/store.ts
 var MemorySessionStore = class {
@@ -2434,7 +2965,7 @@ var SessionManager = class {
         return { container: container2, id: existingId, isNew: false };
       }
     }
-    const id = (0, import_node_crypto3.randomBytes)(24).toString("base64url");
+    const id = (0, import_node_crypto4.randomBytes)(24).toString("base64url");
     const container = this.#root.createChild("session");
     this.#containers.set(id, container);
     await this.store.set(id, {});
@@ -2635,10 +3166,11 @@ var CloveApp = class {
   ws;
   mcp;
   sessions;
+  cache;
   scan;
   #options;
   #closed = false;
-  constructor(scan, root, logger, sessions, ws2, mcp, options2) {
+  constructor(scan, root, logger, sessions, ws2, mcp, cache, options2) {
     this.scan = scan;
     this.registry = scan.registry;
     this.routes = scan.routes;
@@ -2647,6 +3179,7 @@ var CloveApp = class {
     this.sessions = sessions;
     this.ws = ws2;
     this.mcp = mcp;
+    this.cache = cache;
     this.#options = options2;
   }
   /**
@@ -2655,7 +3188,6 @@ var CloveApp = class {
    */
   async handle(rawReq, rawRes) {
     const req = new CloveRequest(rawReq, this.#options.bodyLimit);
-    const res = new CloveResponse(rawRes);
     if (this.mcp.owns(req.path)) {
       const body = req.method === "POST" ? await req.readBody() : void 0;
       try {
@@ -2663,7 +3195,8 @@ var CloveApp = class {
       } catch (err) {
         this.logger.error("MCP transport error:", err);
         if (!rawRes.headersSent) {
-          writeError(err, res, {
+          const res2 = new CloveResponse(rawRes);
+          writeError(err, res2, {
             exposeErrors: this.#options.exposeErrors,
             logger: this.logger
           });
@@ -2674,9 +3207,13 @@ var CloveApp = class {
     const match = this.routes.match(req.method, req.path);
     if (!match) return false;
     req.params = match.params;
+    const res = new CloveResponse(rawRes, {
+      buffered: Boolean(match.route.cache)
+    });
     let sessionId;
     let sessionContainer;
     let requestContainer;
+    let completion;
     try {
       const parent = this.sessions.needed ? await (async () => {
         const acquired = await this.sessions.acquire(req, res);
@@ -2686,19 +3223,39 @@ var CloveApp = class {
       })() : this.root;
       requestContainer = parent.createChild("request");
       await req.readBody();
-      await runPipeline(match.route, req, res, requestContainer, {
+      completion = await runPipeline(match.route, req, res, requestContainer, {
         middlewares: this.scan.middlewares,
         exposeErrors: this.#options.exposeErrors,
         logger: this.logger,
-        views: this.scan.views
+        views: this.scan.views,
+        cache: this.cache
       });
+      await this.cache.complete(res, completion);
+      if (completion.handlerExecuted) {
+        this.cache.applyClientPolicy(match.route, req, res);
+      }
+      if (match.route.invalidates && completion.handlerExecuted && completion.error === void 0 && res.statusCode >= 200 && res.statusCode < 300) {
+        await this.cache.invalidateRoute(match.route.invalidates, {
+          route: match.route,
+          req,
+          res,
+          ctx: requestContainer.ctx,
+          result: completion.result
+        }).catch((err) => this.logger.error("Route cache invalidation failed:", err));
+      }
     } catch (err) {
+      await this.cache.complete(res, {
+        result: completion?.result,
+        error: err,
+        handlerExecuted: completion?.handlerExecuted ?? false
+      }).catch(() => void 0);
       writeError(err, res, {
         exposeErrors: this.#options.exposeErrors,
         logger: this.logger
       });
     } finally {
       if (!res.sent) res.end();
+      res.commit({ omitBody: req.method === "HEAD" });
       if (sessionId && sessionContainer) {
         await this.sessions.persist(sessionId, sessionContainer).catch((err) => this.logger.error("Failed to persist session:", err));
       }
@@ -2782,6 +3339,38 @@ async function createApp(options2 = {}) {
       isFactory: false
     });
   }
+  if (!scan.registry.has("cacheStore")) {
+    scan.registry.add({
+      key: "cacheStore",
+      kind: "builtin",
+      lifetime: "singleton",
+      file: "<builtin>",
+      value: new MemoryCacheStore(),
+      isFactory: false
+    });
+  }
+  if (scan.registry.has("cache")) {
+    throw new CloveBootError(
+      '`ctx.cache` is reserved by CloveJS. Rename the service or DI value that provides "cache".',
+      [scan.registry.get("cache").file]
+    );
+  }
+  scan.registry.add({
+    key: "cache",
+    kind: "builtin",
+    lifetime: "singleton",
+    file: "<builtin>",
+    isFactory: true,
+    factory: async (ctx) => {
+      const store = await ctx.cacheStore;
+      if (!isCacheStore(store)) {
+        throw new TypeError(
+          "services/cacheStore.ts must return an object with get, set, delete and invalidateTags methods."
+        );
+      }
+      return new CacheRuntime(store, logger);
+    }
+  });
   if (options2.overrides) {
     for (const [key, value] of Object.entries(options2.overrides)) {
       const existing = scan.registry.get(key);
@@ -2798,6 +3387,7 @@ async function createApp(options2 = {}) {
   }
   const root = new Container(scan.registry, "singleton");
   await root.ensure();
+  const cache = root.get("cache");
   const secret = options2.sessionSecret ?? process.env.CLOVE_SECRET ?? null;
   if (!secret && scan.registry.byLifetime("session").length > 0) {
     logger.warn(
@@ -2826,7 +3416,7 @@ async function createApp(options2 = {}) {
     ...scan.mcp.auth ? { auth: scan.mcp.auth } : {},
     exposeErrors: options2.exposeErrors ?? isDev
   });
-  return new CloveApp(scan, root, logger, sessions, ws2, mcp, {
+  return new CloveApp(scan, root, logger, sessions, ws2, mcp, cache, {
     bodyLimit: options2.bodyLimit ?? DEFAULT_BODY_LIMIT,
     exposeErrors: options2.exposeErrors ?? isDev
   });
@@ -2905,6 +3495,7 @@ async function engine(host, options2 = {}) {
   CloveRequest,
   CloveResponse,
   HttpError,
+  MemoryCacheStore,
   MemorySessionStore,
   all,
   bootstrap,

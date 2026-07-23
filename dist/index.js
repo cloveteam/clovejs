@@ -2,22 +2,25 @@ import {
   CloveApp,
   CloveRequest,
   CloveResponse,
+  MemoryCacheStore,
   MemorySessionStore,
   createApp,
   createLogger,
   loadEnv,
   parseEnv
-} from "./chunk-4XHTL7FL.js";
+} from "./chunk-BBRJXFJG.js";
 import {
+  CACHE,
   CloveBootError,
   HttpError,
+  INVALIDATES,
   KIND,
   META,
   VIEW,
   error,
   isHttpError,
   isViewResult
-} from "./chunk-Q5KL4S23.js";
+} from "./chunk-HUBFYLOZ.js";
 
 // src/http/sse.ts
 var SSE_HEADERS = {
@@ -182,6 +185,14 @@ function route(method, handler) {
     meta(meta) {
       Object.assign(def[META], meta);
       return def;
+    },
+    cache(policy) {
+      def[CACHE] = policy;
+      return def;
+    },
+    invalidates(tags) {
+      def[INVALIDATES] = tags;
+      return def;
     }
   };
   return def;
@@ -296,6 +307,7 @@ export {
   CloveRequest,
   CloveResponse,
   HttpError,
+  MemoryCacheStore,
   MemorySessionStore,
   all,
   bootstrap,

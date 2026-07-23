@@ -37,6 +37,32 @@ previous call.
 export default get(handler).meta({ adminOnly: true, json: false })
 ```
 
+### `.cache(policy)`
+
+Caches the terminal handler outcome for a `GET` or `HEAD` route while the full
+middleware interceptor chain continues to run on every request.
+
+```ts
+export default get(handler).cache({
+  ttl: "1m",
+  staleWhileRevalidate: "5m",
+  tags: ["notes"],
+  client: { maxAge: "30s" },
+})
+```
+
+See [Caching](/guide/caching) for keys, HTTP validators, safety rules and store
+adapters.
+
+### `.invalidates(tags)`
+
+Invalidates cache tags after the handler and middleware chain complete
+successfully:
+
+```ts
+export default post(handler).invalidates(["notes"])
+```
+
 ## `middleware(fn)`
 
 ```ts

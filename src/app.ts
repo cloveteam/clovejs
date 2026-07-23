@@ -1,10 +1,12 @@
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
+import { CacheRuntime } from "./cache/runtime.js"
+import { isCacheStore, MemoryCacheStore, type CacheStore } from "./cache/store.js"
 import { Container } from "./container/container.js"
 import { createLogger, type Logger, type LogLevel } from "./container/logger.js"
 import { Registry } from "./container/registry.js"
 import { loadEnv } from "./env.js"
-import { error } from "./errors.js"
+import { CloveBootError, error } from "./errors.js"
 import { DEFAULT_BODY_LIMIT } from "./http/body.js"
 import { CloveRequest } from "./http/request.js"
 import { CloveResponse } from "./http/response.js"
@@ -77,6 +79,7 @@ export class CloveApp {
   readonly ws: WsRuntime
   readonly mcp: McpRuntime
   readonly sessions: SessionManager
+  readonly cache: CacheRuntime
   readonly scan: ScanResult
 
   #options: Required<Pick<AppOptions, "bodyLimit" | "exposeErrors">>
@@ -89,6 +92,7 @@ export class CloveApp {
     sessions: SessionManager,
     ws: WsRuntime,
     mcp: McpRuntime,
+    cache: CacheRuntime,
     options: Required<Pick<AppOptions, "bodyLimit" | "exposeErrors">>,
   ) {
     this.scan = scan
@@ -99,6 +103,7 @@ export class CloveApp {
     this.sessions = sessions
     this.ws = ws
     this.mcp = mcp
+    this.cache = cache
     this.#options = options
   }
 
@@ -108,7 +113,6 @@ export class CloveApp {
    */
   async handle(rawReq: IncomingMessage, rawRes: ServerResponse): Promise<boolean> {
     const req = new CloveRequest(rawReq, this.#options.bodyLimit)
-    const res = new CloveResponse(rawRes)
 
     // MCP owns its endpoint outright: it speaks JSON-RPC over its own
     // transport, so it runs before route matching and outside the middleware
@@ -120,6 +124,7 @@ export class CloveApp {
       } catch (err) {
         this.logger.error("MCP transport error:", err)
         if (!rawRes.headersSent) {
+          const res = new CloveResponse(rawRes)
           writeError(err, res, {
             exposeErrors: this.#options.exposeErrors,
             logger: this.logger,
@@ -133,10 +138,16 @@ export class CloveApp {
     if (!match) return false
 
     req.params = match.params
+    const res = new CloveResponse(rawRes, {
+      buffered: Boolean(match.route.cache),
+    })
 
     let sessionId: string | undefined
     let sessionContainer: Container | undefined
     let requestContainer: Container | undefined
+    let completion:
+      | Awaited<ReturnType<typeof runPipeline>>
+      | undefined
 
     try {
       const parent = this.sessions.needed
@@ -153,19 +164,50 @@ export class CloveApp {
       // Populate `req.body` up front so handlers can read it synchronously.
       await req.readBody()
 
-      await runPipeline(match.route, req, res, requestContainer, {
+      completion = await runPipeline(match.route, req, res, requestContainer, {
         middlewares: this.scan.middlewares,
         exposeErrors: this.#options.exposeErrors,
         logger: this.logger,
         views: this.scan.views,
+        cache: this.cache,
       })
+      await this.cache.complete(res, completion)
+      if (completion.handlerExecuted) {
+        this.cache.applyClientPolicy(match.route, req, res)
+      }
+
+      if (
+        match.route.invalidates &&
+        completion.handlerExecuted &&
+        completion.error === undefined &&
+        res.statusCode >= 200 &&
+        res.statusCode < 300
+      ) {
+        await this.cache
+          .invalidateRoute(match.route.invalidates, {
+            route: match.route,
+            req,
+            res,
+            ctx: requestContainer.ctx,
+            result: completion.result,
+          })
+          .catch((err) => this.logger.error("Route cache invalidation failed:", err))
+      }
     } catch (err) {
+      await this.cache
+        .complete(res, {
+          result: completion?.result,
+          error: err,
+          handlerExecuted: completion?.handlerExecuted ?? false,
+        })
+        .catch(() => undefined)
       writeError(err, res, {
         exposeErrors: this.#options.exposeErrors,
         logger: this.logger,
       })
     } finally {
       if (!res.sent) res.end()
+      res.commit({ omitBody: req.method === "HEAD" })
       if (sessionId && sessionContainer) {
         await this.sessions
           .persist(sessionId, sessionContainer)
@@ -284,6 +326,39 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     })
   }
 
+  if (!scan.registry.has("cacheStore")) {
+    scan.registry.add({
+      key: "cacheStore",
+      kind: "builtin",
+      lifetime: "singleton",
+      file: "<builtin>",
+      value: new MemoryCacheStore(),
+      isFactory: false,
+    })
+  }
+  if (scan.registry.has("cache")) {
+    throw new CloveBootError(
+      '`ctx.cache` is reserved by CloveJS. Rename the service or DI value that provides "cache".',
+      [scan.registry.get("cache")!.file],
+    )
+  }
+  scan.registry.add({
+    key: "cache",
+    kind: "builtin",
+    lifetime: "singleton",
+    file: "<builtin>",
+    isFactory: true,
+    factory: async (ctx) => {
+      const store = await ctx.cacheStore
+      if (!isCacheStore(store)) {
+        throw new TypeError(
+          "services/cacheStore.ts must return an object with get, set, delete and invalidateTags methods.",
+        )
+      }
+      return new CacheRuntime(store as CacheStore, logger)
+    },
+  })
+
   // Apply test overrides before any container reads the registry, so singletons
   // resolve against the fakes rather than the real dependencies.
   if (options.overrides) {
@@ -308,6 +383,7 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
   // Resolve every singleton before serving, so handlers see values rather than
   // promises when they read `ctx.something`.
   await root.ensure()
+  const cache = root.get("cache") as CacheRuntime
 
   const secret = options.sessionSecret ?? process.env.CLOVE_SECRET ?? null
   if (!secret && scan.registry.byLifetime("session").length > 0) {
@@ -346,7 +422,7 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     exposeErrors: options.exposeErrors ?? isDev,
   })
 
-  return new CloveApp(scan, root, logger, sessions, ws, mcp, {
+  return new CloveApp(scan, root, logger, sessions, ws, mcp, cache, {
     bodyLimit: options.bodyLimit ?? DEFAULT_BODY_LIMIT,
     exposeErrors: options.exposeErrors ?? isDev,
   })

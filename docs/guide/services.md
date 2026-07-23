@@ -124,6 +124,7 @@ One name is interpreted by the framework:
 
 | File | Effect |
 | --- | --- |
+| `services/cacheStore.ts` | Replaces the in-process [route cache store](/guide/caching#store-adapters) |
 | `services/sessionStore.ts` | Returned object is used as the [session store](/guide/sessions#custom-stores) |
 | `services/logger.ts` | Replaces the built-in `ctx.logger` |
 

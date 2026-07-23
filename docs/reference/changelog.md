@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Route caching.** `GET` and `HEAD` definitions support `.cache(...)` with
+  deterministic keys, `Vary`, stale follower serving, concurrent-miss
+  coalescing, ETags and conditional `304` responses. Mutation routes can
+  declare `.invalidates(...)`, and `ctx.cache.invalidate(...)` provides the
+  imperative escape hatch. Middleware remains a complete interceptor chain on
+  hits because Clove caches only the terminal handler outcome.
+- `MemoryCacheStore` is the single-process default;
+  `services/cacheStore.ts` can provide a distributed adapter.
 - **MCP servers.** Files in `mcp/tools/`, `mcp/resources/` and `mcp/prompts/`
   expose the project over the Model Context Protocol, served at `/mcp`
   alongside routes. Definitions come from `clovejs/mcp`; resource URIs derive

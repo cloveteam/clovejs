@@ -5,13 +5,15 @@ Every type below is exported from `clovejs`.
 ## `Ctx` and `RuntimeCtx`
 
 ```ts
-interface Ctx {}
+interface Ctx {
+  readonly cache: CacheController
+}
 type RuntimeCtx = Ctx & Record<string, any>
 ```
 
-`Ctx` is intentionally empty in the framework. Your project gets it augmented
-by the generated `.clove/types.d.ts`, which declares one property per file in
-`services/` and `di/` — see [Typed context](/guide/typed-context).
+`Ctx` contains the built-in cache invalidation facade. Your project augments it
+through the generated `.clove/types.d.ts`, which declares one property per file
+in `services/` and `di/` — see [Typed context](/guide/typed-context).
 
 `RuntimeCtx` is what handlers actually receive: the augmented interface plus
 arbitrary keys, so an un-generated or hand-attached value still type-checks.
@@ -56,6 +58,8 @@ interface Route {
   path: string
   handler: RouteHandlerFn
   meta: Readonly<RouteMeta>
+  cache?: Readonly<CachePolicy>
+  invalidates?: CacheInvalidation
   /** Absolute path of the file this route came from. Used in error messages. */
   file: string
 }

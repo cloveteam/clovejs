@@ -8,8 +8,10 @@ import type { CloveResponse } from "./http/response.js"
  * get it augmented by the generated `.clove/types.d.ts`, which declares one
  * property per file in `services/` and `di/`.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface Ctx {}
+export interface Ctx {
+  /** Built-in route-cache invalidation facade. */
+  readonly cache: CacheController
+}
 
 /**
  * `ctx` as seen at runtime: the augmented interface plus arbitrary keys. The
@@ -59,6 +61,81 @@ export type RouteHandlerFn = (
   ctx: RuntimeCtx,
 ) => unknown | Promise<unknown>
 
+/** A cache duration in milliseconds or as a compact human-readable value. */
+export type CacheDuration =
+  | number
+  | `${number}ms`
+  | `${number}s`
+  | `${number}m`
+  | `${number}h`
+  | `${number}d`
+
+/** Values available when computing a route's cache identity and tags. */
+export interface CacheContext {
+  req: CloveRequest
+  res: CloveResponse
+  ctx: RuntimeCtx
+  route: Route
+}
+
+/** Browser and shared-proxy caching applied to the finalized response. */
+export interface ClientCachePolicy {
+  maxAge?: CacheDuration
+  sharedMaxAge?: CacheDuration
+  staleWhileRevalidate?: CacheDuration
+  /** Defaults to true unless `sharedMaxAge` is configured. */
+  private?: boolean
+  immutable?: boolean
+}
+
+/**
+ * Caches the terminal handler outcome while still running the complete
+ * middleware interceptor chain on every request.
+ */
+export interface CachePolicy {
+  /** How long the handler outcome remains fresh. */
+  ttl: CacheDuration
+  /**
+   * Public entries intentionally ignore caller identity. Private is the safe
+   * default and requires a custom key when credentials are present.
+   */
+  scope?: "public" | "private"
+  /**
+   * How long an expired entry may serve followers while one request refreshes
+   * it. The first request after expiry refreshes synchronously.
+   */
+  staleWhileRevalidate?: CacheDuration
+  /** Request headers included in the cache key and emitted through `Vary`. */
+  vary?: readonly string[]
+  /** Adds an application-specific identity component to the default key. */
+  key?: (args: CacheContext) => string | Promise<string>
+  /** Tags used for bulk invalidation. */
+  tags?:
+    | readonly string[]
+    | ((args: CacheContext & { result: unknown }) =>
+        readonly string[] | Promise<readonly string[]>)
+  /**
+   * Browser/CDN policy. Omit for `private, no-cache`; pass false for
+   * `no-store`.
+   */
+  client?: false | ClientCachePolicy
+}
+
+/** Values available after a mutation handler and all interceptors complete. */
+export interface CacheInvalidationContext extends CacheContext {
+  result: unknown
+}
+
+export type CacheInvalidation =
+  | readonly string[]
+  | ((args: CacheInvalidationContext) =>
+      readonly string[] | Promise<readonly string[]>)
+
+/** Imperative cache operations exposed as `ctx.cache`. */
+export interface CacheController {
+  invalidate(tags: readonly string[]): Promise<void>
+}
+
 export interface RouteMeta {
   /** Set `false` to disable the built-in JSON middleware for this route. */
   json?: boolean
@@ -66,14 +143,22 @@ export interface RouteMeta {
 }
 
 export const META = Symbol.for("clovejs.meta")
+export const CACHE = Symbol.for("clovejs.cache")
+export const INVALIDATES = Symbol.for("clovejs.invalidates")
 
 export interface RouteDefinition extends Definition<"route"> {
   method: HttpMethod | "ALL"
   handler: RouteHandlerFn
   /** Collected metadata. Read by the scanner, written by `.meta()`. */
   [META]: RouteMeta
+  [CACHE]?: CachePolicy
+  [INVALIDATES]?: CacheInvalidation
   /** Attach route metadata. Chainable; merges with any previous call. */
   meta(meta: RouteMeta): RouteDefinition
+  /** Cache this route's terminal handler outcome. */
+  cache(policy: CachePolicy): RouteDefinition
+  /** Invalidate cache tags after this handler completes successfully. */
+  invalidates(tags: CacheInvalidation): RouteDefinition
 }
 
 /** A route as registered in the router, with its resolved path and origin. */
@@ -82,6 +167,8 @@ export interface Route {
   path: string
   handler: RouteHandlerFn
   meta: Readonly<RouteMeta>
+  cache?: Readonly<CachePolicy>
+  invalidates?: CacheInvalidation
   /** Absolute path of the file this route came from. Used in error messages. */
   file: string
 }
