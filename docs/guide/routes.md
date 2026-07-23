@@ -78,6 +78,34 @@ api/v1/users/get.ts        ->  GET /api/v1/users
 
 Use the directory form when a resource has enough files that grouping helps.
 
+## Web pages at the root
+
+`web/` is a second route directory, identical to `api/` in every way except
+where it mounts: its files hang off the root `/` rather than `/api`. It exists
+for the things that are not an API — HTML pages served straight off the domain.
+
+```
+web/get.ts               ->  GET /
+web/about.get.ts         ->  GET /about
+web/blog/[slug].get.ts   ->  GET /blog/:slug
+```
+
+Everything else is the same: the method wrappers, the filename suffix rules,
+route parameters, middlewares, and the return-value pipeline. Pairing `web/`
+with an [HTML template engine](/guide/templates) is the common case:
+
+```ts
+// web/get.ts  ->  GET /
+import { get, view } from "clovejs"
+
+export default get(async (req) => view("home", { name: req.query.name }))
+```
+
+A `web/` file and an `api/` file may not resolve to the same URL — but since
+one mounts at `/` and the other under `/api`, that only happens if a `web/`
+file is literally named to sit under `/api`. Clashes are a boot error, as they
+are within a single directory.
+
 ## Inspecting the route table
 
 ```bash

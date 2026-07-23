@@ -45,6 +45,7 @@ export async function scaffold(options: ScaffoldOptions): Promise<ScaffoldResult
   // dependency, and an empty directory costs a project nothing.
   for (const dir of [
     "api",
+    "web",
     "ws",
     "di",
     "services",

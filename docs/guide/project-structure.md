@@ -6,7 +6,8 @@ never configure which one you are using.
 
 ```
 src/
-  api/          route handlers      -> HTTP endpoints
+  api/          route handlers      -> HTTP endpoints under /api
+  web/          page handlers       -> HTTP endpoints under /
   ws/           socket handlers     -> WebSocket endpoints
   mcp/          tools, resources,
                 prompts             -> MCP server
@@ -21,7 +22,8 @@ src/
 
 | Directory | Contains | Becomes |
 | --- | --- | --- |
-| `api/` | Modules whose default export is `get()`, `post()`, … | HTTP routes, path mirroring the file path |
+| `api/` | Modules whose default export is `get()`, `post()`, … | HTTP routes under `/api`, path mirroring the file path |
+| `web/` | Same as `api/` | The same, but mounted at the root `/` — for [HTML pages](/guide/routes#web-pages-at-the-root) |
 | `ws/` | Modules whose default export is `ws()` | WebSocket endpoints under `/ws/…` |
 | `mcp/` | `tools/`, `resources/` and `prompts/` subdirectories | An [MCP server](/guide/mcp) at `/mcp` |
 | `services/` | Modules whose default export is `service()` | `ctx.<filename>`, a singleton created at boot |

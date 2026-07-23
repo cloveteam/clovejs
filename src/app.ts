@@ -157,6 +157,7 @@ export class CloveApp {
         middlewares: this.scan.middlewares,
         exposeErrors: this.#options.exposeErrors,
         logger: this.logger,
+        views: this.scan.views,
       })
     } catch (err) {
       writeError(err, res, {

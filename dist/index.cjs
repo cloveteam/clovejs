@@ -47,6 +47,7 @@ __export(src_exports, {
   get: () => get,
   head: () => head,
   isHttpError: () => isHttpError,
+  isViewResult: () => isViewResult,
   loadEnv: () => loadEnv,
   middleware: () => middleware,
   options: () => options,
@@ -56,6 +57,8 @@ __export(src_exports, {
   put: () => put,
   service: () => service,
   sse: () => sse,
+  view: () => view,
+  views: () => views,
   ws: () => ws
 });
 module.exports = __toCommonJS(src_exports);
@@ -156,7 +159,7 @@ var SseStream = class {
   }
   /** The push-oriented view handed to the user handler. */
   args(ctx) {
-    const view = {
+    const view2 = {
       send: (data) => this.send(data),
       emit: (event) => this.emit(event),
       comment: (text) => this.comment(text),
@@ -169,8 +172,8 @@ var SseStream = class {
       req: this.#req,
       params: this.#req.params
     };
-    Object.defineProperty(view, "open", { get: () => this.open, enumerable: true });
-    return view;
+    Object.defineProperty(view2, "open", { get: () => this.open, enumerable: true });
+    return view2;
   }
   async #teardown() {
     if (this.#closed) return;
@@ -216,6 +219,10 @@ function serveSse(handler, options2) {
 // src/types.ts
 var KIND = /* @__PURE__ */ Symbol.for("clovejs.kind");
 var META = /* @__PURE__ */ Symbol.for("clovejs.meta");
+var VIEW = /* @__PURE__ */ Symbol.for("clovejs.view");
+function isViewResult(value) {
+  return typeof value === "object" && value !== null && VIEW in value;
+}
 function isDefinition(value) {
   return typeof value === "object" && value !== null && KIND in value;
 }
@@ -261,6 +268,12 @@ function di(spec) {
 }
 function ws(handler) {
   return { [KIND]: "ws", handler };
+}
+function views(engine2) {
+  return { [KIND]: "views", engine: engine2 };
+}
+function view(template, data) {
+  return { [VIEW]: true, template, data };
 }
 function sse(handler) {
   const opts = {};
@@ -1596,12 +1609,28 @@ function applyJsonResult(result, route2, res, method) {
   res.json(result);
 }
 
+// src/pipeline/view.ts
+async function applyViewResult(result, res, ctx, engine2) {
+  if (res.sent) return;
+  if (!engine2) {
+    throw new Error(
+      `A handler returned view("${result.template}") but no view engine is registered. Add views.ts at your source root, default-exporting views({ render }).`
+    );
+  }
+  const rendered = await engine2.render(result.template, result.data, ctx);
+  if (res.sent) return;
+  if (!res.contentType) res.type(engine2.contentType ?? "html");
+  res.send(rendered);
+}
+
 // src/pipeline/index.ts
 async function runPipeline(route2, req, res, container, options2) {
   const ctx = container.ctx;
   try {
     const result = await composeChain(route2, req, res, ctx, options2.middlewares);
-    if (jsonEnabled(route2, res)) {
+    if (isViewResult(result)) {
+      await applyViewResult(result, res, ctx, options2.views);
+    } else if (jsonEnabled(route2, res)) {
       applyJsonResult(result, route2, res, req.method);
     } else if (!res.sent) {
       if (result !== void 0 && result !== null) res.send(result);
@@ -2039,6 +2068,7 @@ function deriveContextKey(relativePath) {
 // src/scanner/index.ts
 var DEFAULT_DIRS = {
   api: "api",
+  web: "web",
   ws: "ws",
   di: "di",
   services: "services",
@@ -2106,33 +2136,8 @@ async function scanProject(options2) {
       }
     }
   }
-  const apiDir = (0, import_node_path3.join)(sourceDir, dirs.api);
-  for (const file of await walkDir(apiDir)) {
-    files.push(file.absolute);
-    const def = await loadDefault(loader, file.absolute);
-    if (definitionKind(def) !== "route") {
-      throw new CloveBootError(
-        `Files in ${dirs.api}/ must default-export a route handler wrapped in get(), post(), put(), patch(), del(), head(), options() or all(), but this one exports ${describe(definitionKind(def))}.`,
-        [file.absolute]
-      );
-    }
-    const route2 = def;
-    const derived = deriveRoutePath(file.relative);
-    if (derived.method !== null && derived.method !== route2.method) {
-      throw new CloveBootError(
-        `Method mismatch: the filename says ${derived.method} but the handler is wrapped in ${route2.method.toLowerCase()}(). Make them agree, or drop the method suffix from the filename.`,
-        [file.absolute]
-      );
-    }
-    const registered = {
-      method: route2.method,
-      path: (0, import_node_path3.join)("/", dirs.api, derived.path).split("\\").join("/"),
-      handler: route2.handler,
-      meta: Object.freeze({ ...route2[META] }),
-      file: file.absolute
-    };
-    routes.add(registered);
-  }
+  await loadRoutes(loader, (0, import_node_path3.join)(sourceDir, dirs.api), dirs.api, dirs.api, routes, files);
+  await loadRoutes(loader, (0, import_node_path3.join)(sourceDir, dirs.web), dirs.web, "", routes, files);
   const wsDir = (0, import_node_path3.join)(sourceDir, dirs.ws);
   for (const file of await walkDir(wsDir)) {
     files.push(file.absolute);
@@ -2252,7 +2257,49 @@ async function scanProject(options2) {
     });
   }
   middlewares.sort(comparePriority);
-  return { routes, middlewares, sockets, socketHandlers, mcp, registry, files };
+  let views2 = null;
+  for (const ext of ["ts", "js", "mjs", "cjs"]) {
+    const viewsFile = (0, import_node_path3.join)(sourceDir, `views.${ext}`);
+    if (!(0, import_node_fs2.existsSync)(viewsFile)) continue;
+    files.push(viewsFile);
+    const def = await loadDefault(loader, viewsFile);
+    if (definitionKind(def) !== "views") {
+      throw new CloveBootError(
+        `views.${ext} must default-export views(...), but it exports ${describe(definitionKind(def))}.`,
+        [viewsFile]
+      );
+    }
+    views2 = def.engine;
+    break;
+  }
+  return { routes, middlewares, sockets, socketHandlers, mcp, registry, views: views2, files };
+}
+async function loadRoutes(loader, dir, label, mount, routes, files) {
+  for (const file of await walkDir(dir)) {
+    files.push(file.absolute);
+    const def = await loadDefault(loader, file.absolute);
+    if (definitionKind(def) !== "route") {
+      throw new CloveBootError(
+        `Files in ${label}/ must default-export a route handler wrapped in get(), post(), put(), patch(), del(), head(), options() or all(), but this one exports ${describe(definitionKind(def))}.`,
+        [file.absolute]
+      );
+    }
+    const route2 = def;
+    const derived = deriveRoutePath(file.relative);
+    if (derived.method !== null && derived.method !== route2.method) {
+      throw new CloveBootError(
+        `Method mismatch: the filename says ${derived.method} but the handler is wrapped in ${route2.method.toLowerCase()}(). Make them agree, or drop the method suffix from the filename.`,
+        [file.absolute]
+      );
+    }
+    routes.add({
+      method: route2.method,
+      path: (0, import_node_path3.join)("/", mount, derived.path).split("\\").join("/"),
+      handler: route2.handler,
+      meta: Object.freeze({ ...route2[META] }),
+      file: file.absolute
+    });
+  }
 }
 function describe(kind) {
   if (kind === null) return "a plain value (not an CloveJS definition)";
@@ -2642,7 +2689,8 @@ var CloveApp = class {
       await runPipeline(match.route, req, res, requestContainer, {
         middlewares: this.scan.middlewares,
         exposeErrors: this.#options.exposeErrors,
-        logger: this.logger
+        logger: this.logger,
+        views: this.scan.views
       });
     } catch (err) {
       writeError(err, res, {
@@ -2869,6 +2917,7 @@ async function engine(host, options2 = {}) {
   get,
   head,
   isHttpError,
+  isViewResult,
   loadEnv,
   middleware,
   options,
@@ -2878,6 +2927,8 @@ async function engine(host, options2 = {}) {
   put,
   service,
   sse,
+  view,
+  views,
   ws
 });
 //# sourceMappingURL=index.cjs.map

@@ -11,6 +11,8 @@ export {
   put,
   service,
   sse,
+  view,
+  views,
   ws,
 } from "./definitions.js"
 
@@ -53,9 +55,13 @@ export type {
   SseHandlerFn,
   SseOptions,
   ValueFactory,
+  ViewEngine,
+  ViewResult,
   WsArgs,
   WsHandlerFn,
 } from "./types.js"
+
+export { isViewResult } from "./types.js"
 
 export type {
   DiDefinition,
@@ -63,6 +69,7 @@ export type {
   RouteDefinition,
   ServiceDefinition,
   SseRouteDefinition,
+  ViewsDefinition,
   WsDefinition,
 } from "./types.js"
 

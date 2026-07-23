@@ -92,6 +92,22 @@ describe("boot-time validation", () => {
     await expect(promise).rejects.toThrow(/parameter name conflict/i)
   })
 
+  it("rejects a web file that exports the wrong definition", async () => {
+    const promise = boot({
+      "web/page.get.ts": `import { service } from "clovejs"\nexport default service(async () => ({}))\n`,
+    })
+    await expect(promise).rejects.toThrow(CloveBootError)
+    await expect(promise).rejects.toThrow(/Files in web\/ must default-export a route handler/)
+  })
+
+  it("rejects a views file that exports the wrong definition", async () => {
+    const promise = boot({
+      "views.ts": `import { service } from "clovejs"\nexport default service(async () => ({}))\n`,
+    })
+    await expect(promise).rejects.toThrow(CloveBootError)
+    await expect(promise).rejects.toThrow(/views\.ts must default-export views\(\.\.\.\)/)
+  })
+
   it("boots an empty project without complaint", async () => {
     await expect(boot({})).resolves.toBeUndefined()
   })

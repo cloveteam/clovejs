@@ -77,6 +77,34 @@ describe("json middleware", () => {
   })
 })
 
+describe("view rendering", () => {
+  it("renders a view() result through the registered engine as HTML", async () => {
+    const res = await client.get("/api/v1/hello?name=ada")
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("text/html")
+    expect(res.text).toBe("<h1>Hello, ada!</h1><p>served by http://localhost:3000</p>")
+  })
+
+  it("passes handler data and reads ctx-derived globals", async () => {
+    const res = await client.get("/api/v1/hello")
+    expect(res.text).toContain("Hello, world!")
+  })
+})
+
+describe("web routes", () => {
+  it("mounts a web/ page at the root path, not under /api", async () => {
+    const res = await client.get("/")
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("text/html")
+    expect(res.text).toContain("Hello, root!")
+  })
+
+  it("does not expose a web/ page under /api", async () => {
+    const res = await client.get("/api")
+    expect(res.status).toBe(404)
+  })
+})
+
 describe("errors", () => {
   it("renders a thrown HttpError with its status and body", async () => {
     const res = await client.post("/api/v1/login", { username: "ada" })

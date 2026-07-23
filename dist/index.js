@@ -7,15 +7,17 @@ import {
   createLogger,
   loadEnv,
   parseEnv
-} from "./chunk-SHLLTVLQ.js";
+} from "./chunk-4XHTL7FL.js";
 import {
   CloveBootError,
   HttpError,
   KIND,
   META,
+  VIEW,
   error,
-  isHttpError
-} from "./chunk-XBO76SHN.js";
+  isHttpError,
+  isViewResult
+} from "./chunk-Q5KL4S23.js";
 
 // src/http/sse.ts
 var SSE_HEADERS = {
@@ -113,7 +115,7 @@ var SseStream = class {
   }
   /** The push-oriented view handed to the user handler. */
   args(ctx) {
-    const view = {
+    const view2 = {
       send: (data) => this.send(data),
       emit: (event) => this.emit(event),
       comment: (text) => this.comment(text),
@@ -126,8 +128,8 @@ var SseStream = class {
       req: this.#req,
       params: this.#req.params
     };
-    Object.defineProperty(view, "open", { get: () => this.open, enumerable: true });
-    return view;
+    Object.defineProperty(view2, "open", { get: () => this.open, enumerable: true });
+    return view2;
   }
   async #teardown() {
     if (this.#closed) return;
@@ -208,6 +210,12 @@ function di(spec) {
 }
 function ws(handler) {
   return { [KIND]: "ws", handler };
+}
+function views(engine2) {
+  return { [KIND]: "views", engine: engine2 };
+}
+function view(template, data) {
+  return { [VIEW]: true, template, data };
 }
 function sse(handler) {
   const opts = {};
@@ -300,6 +308,7 @@ export {
   get,
   head,
   isHttpError,
+  isViewResult,
   loadEnv,
   middleware,
   options,
@@ -309,6 +318,8 @@ export {
   put,
   service,
   sse,
+  view,
+  views,
   ws
 };
 //# sourceMappingURL=index.js.map

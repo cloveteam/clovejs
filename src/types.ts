@@ -29,6 +29,7 @@ export type DefinitionKind =
   | "service"
   | "di"
   | "ws"
+  | "views"
   | "mcpTool"
   | "mcpResource"
   | "mcpPrompt"
@@ -155,6 +156,57 @@ export interface WsDefinition extends Definition<"ws"> {
   handler: WsHandlerFn
 }
 
+/**
+ * A template engine adapter. Clove ships no engine of its own — a project
+ * registers one from `views.ts` at the source root, wrapping whatever library
+ * it likes (Eta, EJS, Handlebars, a bare `String.raw`, …).
+ *
+ * `render` is the single seam: it receives the template name a handler passed
+ * to {@link ViewResult}, the data, and `ctx` (so the adapter can fold in
+ * request-scoped globals such as the current user or a CSRF token). It owns
+ * template resolution and caching; returning a string or a `Buffer`, sync or
+ * async, are all accepted.
+ */
+export interface ViewEngine {
+  /**
+   * Default `Content-Type` for rendered output, as a
+   * {@link CloveResponse.type} shorthand (`"html"`) or a full MIME type. Used
+   * only when the handler did not set a type itself. Defaults to `"html"`.
+   */
+  contentType?: string
+  render(
+    template: string,
+    data: unknown,
+    ctx: RuntimeCtx,
+  ): string | Buffer | Promise<string | Buffer>
+}
+
+export interface ViewsDefinition extends Definition<"views"> {
+  engine: ViewEngine
+}
+
+export const VIEW = Symbol.for("clovejs.view")
+
+/**
+ * What a handler returns to have a template rendered. Produced by `view()`,
+ * recognised by the pipeline before JSON handling, and rendered through the
+ * registered {@link ViewEngine}. A plain, inspectable value, so a handler that
+ * returns it stays unit-testable without touching `res`.
+ */
+export interface ViewResult {
+  readonly [VIEW]: true
+  template: string
+  data: unknown
+}
+
+export function isViewResult(value: unknown): value is ViewResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    VIEW in (value as Record<PropertyKey, unknown>)
+  )
+}
+
 /** One Server-Sent Event, as passed to {@link SseArgs.emit}. */
 export interface SseEvent {
   /** The `event:` field. Defaults to `"message"` on the client when omitted. */
@@ -228,6 +280,7 @@ export type AnyDefinition =
   | ServiceDefinition
   | DiDefinition
   | WsDefinition
+  | ViewsDefinition
   // MCP definitions are structurally identified the same way, but their shapes
   // live in `src/mcp/` so the core never has to import the MCP SDK.
   | Definition<"mcpTool">

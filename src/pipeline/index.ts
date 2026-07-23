@@ -4,14 +4,17 @@ import { isHttpError } from "../errors.js"
 import type { CloveRequest } from "../http/request.js"
 import type { CloveResponse } from "../http/response.js"
 import type { LoadedMiddleware } from "../scanner/index.js"
-import type { MiddlewareArgs, Route, RuntimeCtx } from "../types.js"
+import { isViewResult, type MiddlewareArgs, type Route, type RuntimeCtx, type ViewEngine } from "../types.js"
 import { applyJsonResult, jsonEnabled } from "./json.js"
+import { applyViewResult } from "./view.js"
 
 export interface PipelineOptions {
   middlewares: LoadedMiddleware[]
   /** Include stack traces in 500 responses. */
   exposeErrors: boolean
   logger: Logger
+  /** The registered template engine, or null when the project has none. */
+  views: ViewEngine | null
 }
 
 /**
@@ -32,7 +35,9 @@ export async function runPipeline(
 
   try {
     const result = await composeChain(route, req, res, ctx, options.middlewares)
-    if (jsonEnabled(route, res)) {
+    if (isViewResult(result)) {
+      await applyViewResult(result, res, ctx, options.views)
+    } else if (jsonEnabled(route, res)) {
       applyJsonResult(result, route, res, req.method)
     } else if (!res.sent) {
       // The route opted out of JSON handling but wrote nothing; close it out.

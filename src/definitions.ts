@@ -15,6 +15,10 @@ import {
   type SseHandlerFn,
   type SseOptions,
   type SseRouteDefinition,
+  VIEW,
+  type ViewEngine,
+  type ViewResult,
+  type ViewsDefinition,
   type WsDefinition,
   type WsHandlerFn,
 } from "./types.js"
@@ -62,6 +66,40 @@ export function di<T>(spec: DiSpec<T>): DiDefinition<T> {
 
 export function ws(handler: WsHandlerFn): WsDefinition {
   return { [KIND]: "ws", handler }
+}
+
+/**
+ * Registers the project's template engine. Lives in `views.ts` at the source
+ * root — one per project, like `mcp/auth.ts`. Clove bundles no engine: wrap
+ * your own in the {@link ViewEngine} `render` seam.
+ *
+ * ```ts
+ * // src/views.ts
+ * import { views } from "clovejs"
+ * import { Eta } from "eta"
+ * const eta = new Eta({ views: "src/views" })
+ * export default views({ render: (tpl, data, ctx) => eta.render(tpl, { ...data as object, app: ctx.config }) })
+ * ```
+ */
+export function views(engine: ViewEngine): ViewsDefinition {
+  return { [KIND]: "views", engine }
+}
+
+/**
+ * Marks a handler's return value for template rendering. The pipeline hands
+ * `template` and `data` to the registered {@link ViewEngine} before it
+ * considers JSON, so a handler can stay a pure function of its inputs:
+ *
+ * ```ts
+ * export default get(async (req, _res, ctx) => {
+ *   const note = ctx.notes.findById(Number(req.params.id))
+ *   if (!note) return null
+ *   return view("notes/detail", { note })
+ * })
+ * ```
+ */
+export function view(template: string, data?: unknown): ViewResult {
+  return { [VIEW]: true, template, data }
 }
 
 /**

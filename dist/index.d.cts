@@ -1,9 +1,9 @@
-import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, e as SseHandlerFn, f as SseRouteDefinition, W as WsHandlerFn, g as WsDefinition } from './runtime-DXyEqo6n.cjs';
-export { C as CloveRequest, h as CloveResponse, i as CookieOptions, j as Ctx, H as HttpMethod, L as LifecycleHooks, k as Lifetime, l as LogLevel, m as Logger, n as MemorySessionStore, o as MiddlewareArgs, p as Route, q as RouteMeta, r as RuntimeCtx, s as SessionStore, t as SseArgs, u as SseEvent, v as SseOptions, V as ValueFactory, w as WsArgs, x as createLogger } from './runtime-DXyEqo6n.cjs';
+import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, e as SseHandlerFn, f as SseRouteDefinition, V as ViewResult, g as ViewEngine, h as ViewsDefinition, W as WsHandlerFn, i as WsDefinition } from './runtime-B7oTMJA7.cjs';
+export { C as CloveRequest, j as CloveResponse, k as CookieOptions, l as Ctx, H as HttpMethod, L as LifecycleHooks, m as Lifetime, n as LogLevel, o as Logger, p as MemorySessionStore, q as MiddlewareArgs, r as Route, s as RouteMeta, t as RuntimeCtx, u as SessionStore, v as SseArgs, w as SseEvent, x as SseOptions, y as ValueFactory, z as WsArgs, A as createLogger, B as isViewResult } from './runtime-B7oTMJA7.cjs';
 export { C as CloveBootError, H as HttpError, e as error, i as isHttpError } from './errors-il7qK9dp.cjs';
 import { Server } from 'node:http';
-import { A as AppOptions, C as CloveApp } from './app-DW1UpD9i.cjs';
-export { c as createApp } from './app-DW1UpD9i.cjs';
+import { A as AppOptions, C as CloveApp } from './app-BbGzlEwi.cjs';
+export { c as createApp } from './app-BbGzlEwi.cjs';
 import 'node:stream';
 
 declare const get: (handler: RouteHandlerFn) => RouteDefinition;
@@ -19,6 +19,34 @@ declare function middleware(fn: MiddlewareFn): MiddlewareDefinition;
 declare function service<M>(factory: ServiceFactory<M>): ServiceDefinition<M>;
 declare function di<T>(spec: DiSpec<T>): DiDefinition<T>;
 declare function ws(handler: WsHandlerFn): WsDefinition;
+/**
+ * Registers the project's template engine. Lives in `views.ts` at the source
+ * root — one per project, like `mcp/auth.ts`. Clove bundles no engine: wrap
+ * your own in the {@link ViewEngine} `render` seam.
+ *
+ * ```ts
+ * // src/views.ts
+ * import { views } from "clovejs"
+ * import { Eta } from "eta"
+ * const eta = new Eta({ views: "src/views" })
+ * export default views({ render: (tpl, data, ctx) => eta.render(tpl, { ...data as object, app: ctx.config }) })
+ * ```
+ */
+declare function views(engine: ViewEngine): ViewsDefinition;
+/**
+ * Marks a handler's return value for template rendering. The pipeline hands
+ * `template` and `data` to the registered {@link ViewEngine} before it
+ * considers JSON, so a handler can stay a pure function of its inputs:
+ *
+ * ```ts
+ * export default get(async (req, _res, ctx) => {
+ *   const note = ctx.notes.findById(Number(req.params.id))
+ *   if (!note) return null
+ *   return view("notes/detail", { note })
+ * })
+ * ```
+ */
+declare function view(template: string, data?: unknown): ViewResult;
 /**
  * Declares a Server-Sent Events endpoint. Lives in `api/` like any GET route —
  * it flows through the HTTP middleware chain and supports path params — but the
@@ -114,4 +142,4 @@ type CloveService<T> = T extends ServiceDefinition<infer R> ? Awaited<R> : never
  */
 type CloveDi<T> = T extends DiDefinition<infer R> ? R extends (...args: never[]) => infer F ? Awaited<F> : R : never;
 
-export { AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, type LoadEnvOptions, MiddlewareDefinition, MiddlewareFn, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, SseHandlerFn, SseRouteDefinition, WsDefinition, WsHandlerFn, all, bootstrap, del, di, engine, get, head, loadEnv, middleware, options, parseEnv, patch, post, put, service, sse, ws };
+export { AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, type LoadEnvOptions, MiddlewareDefinition, MiddlewareFn, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, SseHandlerFn, SseRouteDefinition, ViewEngine, ViewResult, ViewsDefinition, WsDefinition, WsHandlerFn, all, bootstrap, del, di, engine, get, head, loadEnv, middleware, options, parseEnv, patch, post, put, service, sse, view, views, ws };

@@ -102,6 +102,38 @@ is called. Stream options are set with a chainable `.options()`, as routes carry
 `.meta()`: `heartbeat` sends keep-alive comments on an interval; `retry` sets
 the initial reconnect hint.
 
+## `views(engine)`
+
+```ts
+views(engine: ViewEngine): ViewsDefinition
+```
+
+Registers the project's [template engine](/guide/templates). Lives in `views.ts`
+at the source root — one per project. `engine.render(template, data, ctx)` is the
+only required member and owns all engine-specific work; it may return a `string`
+or `Buffer`, sync or async. An optional `engine.contentType` sets the default
+response type (a `res.type()` shorthand or full MIME), defaulting to `html`.
+
+```ts
+export default views({
+  render: (template, data, ctx) => eta.render(template, data),
+})
+```
+
+## `view(template, data?)`
+
+```ts
+view(template: string, data?: unknown): ViewResult
+```
+
+Marks a handler's return value for [template rendering](/guide/templates). The
+pipeline hands `template` and `data` to the registered engine before it considers
+JSON, so a handler stays a pure function of its inputs.
+
+```ts
+export default get(async (req) => view("notes/detail", { id: req.params.id }))
+```
+
 ## `tool(spec)`
 
 ```ts

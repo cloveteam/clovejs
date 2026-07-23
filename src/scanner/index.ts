@@ -17,9 +17,10 @@ import {
   definitionKind,
   type DiDefinition,
   type MiddlewareDefinition,
-  type Route,
   type RouteDefinition,
   type ServiceDefinition,
+  type ViewEngine,
+  type ViewsDefinition,
   type WsDefinition,
 } from "../types.js"
 import { loadDefault, type ModuleLoader } from "./loader.js"
@@ -53,6 +54,8 @@ export interface ScanResult {
   socketHandlers: Map<string, SocketRoute>
   mcp: McpScan
   registry: Registry
+  /** The registered template engine, or null when the project has no views.ts. */
+  views: ViewEngine | null
   /** Every file that contributed, for the dev watcher. */
   files: string[]
 }
@@ -64,10 +67,18 @@ export interface ScanOptions {
   dirs?: Partial<Record<ConventionDir, string>>
 }
 
-export type ConventionDir = "api" | "ws" | "di" | "services" | "middlewares" | "mcp"
+export type ConventionDir =
+  | "api"
+  | "web"
+  | "ws"
+  | "di"
+  | "services"
+  | "middlewares"
+  | "mcp"
 
 export const DEFAULT_DIRS: Record<ConventionDir, string> = {
   api: "api",
+  web: "web",
   ws: "ws",
   di: "di",
   services: "services",
@@ -153,40 +164,12 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     }
   }
 
-  // --- api/ ----------------------------------------------------------------
-  const apiDir = join(sourceDir, dirs.api)
-  for (const file of await walkDir(apiDir)) {
-    files.push(file.absolute)
-    const def = await loadDefault(loader, file.absolute)
-    if (definitionKind(def) !== "route") {
-      throw new CloveBootError(
-        `Files in ${dirs.api}/ must default-export a route handler wrapped in ` +
-          `get(), post(), put(), patch(), del(), head(), options() or all(), ` +
-          `but this one exports ${describe(definitionKind(def))}.`,
-        [file.absolute],
-      )
-    }
-    const route = def as RouteDefinition
-    const derived = deriveRoutePath(file.relative)
-
-    if (derived.method !== null && derived.method !== route.method) {
-      throw new CloveBootError(
-        `Method mismatch: the filename says ${derived.method} but the handler ` +
-          `is wrapped in ${route.method.toLowerCase()}(). Make them agree, or ` +
-          `drop the method suffix from the filename.`,
-        [file.absolute],
-      )
-    }
-
-    const registered: Route = {
-      method: route.method,
-      path: join("/", dirs.api, derived.path).split("\\").join("/"),
-      handler: route.handler,
-      meta: Object.freeze({ ...route[META] }),
-      file: file.absolute,
-    }
-    routes.add(registered)
-  }
+  // --- api/ and web/ -------------------------------------------------------
+  // Both hold route files and share every rule; they differ only in where they
+  // mount. `api/` sits under `/api`, the home of JSON endpoints; `web/` mounts
+  // at the root `/`, for HTML pages served straight off the domain.
+  await loadRoutes(loader, join(sourceDir, dirs.api), dirs.api, dirs.api, routes, files)
+  await loadRoutes(loader, join(sourceDir, dirs.web), dirs.web, "", routes, files)
 
   // --- ws/ -----------------------------------------------------------------
   const wsDir = join(sourceDir, dirs.ws)
@@ -329,7 +312,73 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   }
   middlewares.sort(comparePriority)
 
-  return { routes, middlewares, sockets, socketHandlers, mcp, registry, files }
+  // --- views.ts (optional, single reserved file) ---------------------------
+  // Like `mcp/auth.ts`: there is at most one template engine per project, so it
+  // is a lone file at the source root, not a convention directory.
+  let views: ViewEngine | null = null
+  for (const ext of ["ts", "js", "mjs", "cjs"]) {
+    const viewsFile = join(sourceDir, `views.${ext}`)
+    if (!existsSync(viewsFile)) continue
+    files.push(viewsFile)
+    const def = await loadDefault(loader, viewsFile)
+    if (definitionKind(def) !== "views") {
+      throw new CloveBootError(
+        `views.${ext} must default-export views(...), ` +
+          `but it exports ${describe(definitionKind(def))}.`,
+        [viewsFile],
+      )
+    }
+    views = (def as ViewsDefinition).engine
+    break
+  }
+
+  return { routes, middlewares, sockets, socketHandlers, mcp, registry, views, files }
+}
+
+/**
+ * Loads a directory of route files into the router. Shared by `api/` and
+ * `web/`: `label` names the directory in error messages, and `mount` is the URL
+ * prefix each route hangs under (`"api"` for `/api/...`, `""` for the root).
+ */
+async function loadRoutes(
+  loader: ModuleLoader,
+  dir: string,
+  label: string,
+  mount: string,
+  routes: RouterTrie,
+  files: string[],
+): Promise<void> {
+  for (const file of await walkDir(dir)) {
+    files.push(file.absolute)
+    const def = await loadDefault(loader, file.absolute)
+    if (definitionKind(def) !== "route") {
+      throw new CloveBootError(
+        `Files in ${label}/ must default-export a route handler wrapped in ` +
+          `get(), post(), put(), patch(), del(), head(), options() or all(), ` +
+          `but this one exports ${describe(definitionKind(def))}.`,
+        [file.absolute],
+      )
+    }
+    const route = def as RouteDefinition
+    const derived = deriveRoutePath(file.relative)
+
+    if (derived.method !== null && derived.method !== route.method) {
+      throw new CloveBootError(
+        `Method mismatch: the filename says ${derived.method} but the handler ` +
+          `is wrapped in ${route.method.toLowerCase()}(). Make them agree, or ` +
+          `drop the method suffix from the filename.`,
+        [file.absolute],
+      )
+    }
+
+    routes.add({
+      method: route.method,
+      path: join("/", mount, derived.path).split("\\").join("/"),
+      handler: route.handler,
+      meta: Object.freeze({ ...route[META] }),
+      file: file.absolute,
+    })
+  }
 }
 
 function describe(kind: string | null): string {
