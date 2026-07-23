@@ -26,6 +26,9 @@ export interface SocketLike {
   send(data: string | Buffer): void
   close(code?: number, reason?: string): void
   on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown
+  // `any[]` (not `never[]`) so both the real `ws` socket and the test fake, whose
+  // close/error listeners take differently-typed arguments, remain assignable.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: "close" | "error", listener: (...args: any[]) => void): unknown
 }
 

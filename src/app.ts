@@ -18,6 +18,7 @@ import {
   type ScanResult,
 } from "./scanner/index.js"
 import { SessionManager, isSessionStore, type SessionStore } from "./session/index.js"
+import type { LifecycleHooks, RuntimeCtx } from "./types.js"
 import { WsRuntime } from "./ws/index.js"
 
 export interface AppOptions {
@@ -295,7 +296,7 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
         file: "<override>",
         isFactory,
         ...(isFactory
-          ? { factory: value as (ctx: any, hooks: any) => unknown }
+          ? { factory: value as (ctx: RuntimeCtx, hooks: LifecycleHooks) => unknown }
           : { value }),
       })
     }

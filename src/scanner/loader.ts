@@ -112,9 +112,9 @@ export async function loadDefault(
   loader: ModuleLoader,
   absolutePath: string,
 ): Promise<unknown> {
-  let mod: any
+  let mod: { default?: unknown; module?: { default?: unknown } } | undefined
   try {
-    mod = await loader.load(absolutePath)
+    mod = (await loader.load(absolutePath)) as typeof mod
   } catch (err) {
     throw new CloveBootError(
       `Failed to load module: ${(err as Error).message}`,

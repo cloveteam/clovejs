@@ -11,7 +11,12 @@ import type { CloveResponse } from "./http/response.js"
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface Ctx {}
 
-/** `ctx` as seen at runtime: the augmented interface plus arbitrary keys. */
+/**
+ * `ctx` as seen at runtime: the augmented interface plus arbitrary keys. The
+ * index signature is `any` so reading a resolved dependency off `ctx` needs no
+ * cast; the generated `.clove/types.d.ts` gives known keys their real types.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type RuntimeCtx = Ctx & Record<string, any>
 
 export type Lifetime = "singleton" | "session" | "request"
@@ -105,6 +110,10 @@ export interface MiddlewareDefinition extends Definition<"middleware"> {
  * type-checking. Applying `ThisType<M>` to the awaited type — rather than to the
  * outer union — makes `this` resolve to `M` for both sync and async factories.
  */
+// The generic defaults below are `any` on purpose: the concrete type is inferred
+// from each `service()`/`di()` call, and the default only applies to bare, un-
+// parameterised references, where `any` keeps `this`/value access unconstrained.
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export type ServiceFactory<M = any> = (
   ctx: RuntimeCtx,
   hooks: LifecycleHooks,
@@ -127,6 +136,7 @@ export interface DiDefinition<T = any> extends Definition<"di"> {
   /** True when `value` was supplied as a factory function. */
   isFactory: boolean
 }
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export interface WsArgs {
   onMessage(fn: (msg: string | Buffer) => void | Promise<void>): void

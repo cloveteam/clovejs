@@ -730,6 +730,9 @@ var CloveRequest = class {
    * The parsed body. Populated by the pipeline before handlers run, so it is
    * safe to access synchronously as `req.body`.
    */
+  // Typed `any` so handlers can read `req.body.field` without a cast, matching
+  // the ergonomics of Express's `req.body`. The shape is validated per-route.
+  /* eslint-disable @typescript-eslint/no-explicit-any */
   get body() {
     return this.#body;
   }
@@ -1177,6 +1180,8 @@ var McpRuntime = class {
     });
   }
   /** Builds an MCP server with every scanned tool, resource and prompt bound. */
+  // Returns an untyped SDK `McpServer` instance; see the `Sdk` interface above.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   #buildServer(sdk, parent) {
     const { scan, serverInfo } = this.#options;
     const server = new sdk.McpServer(
@@ -1256,14 +1261,15 @@ var McpRuntime = class {
    * SDK turns it into a JSON-RPC error.
    */
   async #call(parent, file, extra, run, soft = false) {
+    const info = extra;
     const container = parent.createChild("request");
     const args = {
       ctx: container.ctx,
-      sessionId: typeof extra?.sessionId === "string" ? extra.sessionId : null,
+      sessionId: typeof info?.sessionId === "string" ? info.sessionId : null,
       auth: this.#authStore.getStore() ?? null,
-      signal: extra?.signal ?? new AbortController().signal,
+      signal: info?.signal ?? new AbortController().signal,
       log: (level, message) => {
-        void extra?.sendNotification?.({
+        void info?.sendNotification?.({
           method: "notifications/message",
           params: { level, data: message }
         });

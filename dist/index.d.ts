@@ -1,9 +1,9 @@
-import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, e as SseHandlerFn, f as SseRouteDefinition, W as WsHandlerFn, g as WsDefinition } from './runtime-IsKMEuKt.js';
-export { C as CloveRequest, h as CloveResponse, i as CookieOptions, j as Ctx, H as HttpMethod, L as LifecycleHooks, k as Lifetime, l as LogLevel, m as Logger, n as MemorySessionStore, o as MiddlewareArgs, p as Route, q as RouteMeta, r as RuntimeCtx, s as SessionStore, t as SseArgs, u as SseEvent, v as SseOptions, V as ValueFactory, w as WsArgs, x as createLogger } from './runtime-IsKMEuKt.js';
+import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, e as SseHandlerFn, f as SseRouteDefinition, W as WsHandlerFn, g as WsDefinition } from './runtime-DXyEqo6n.js';
+export { C as CloveRequest, h as CloveResponse, i as CookieOptions, j as Ctx, H as HttpMethod, L as LifecycleHooks, k as Lifetime, l as LogLevel, m as Logger, n as MemorySessionStore, o as MiddlewareArgs, p as Route, q as RouteMeta, r as RuntimeCtx, s as SessionStore, t as SseArgs, u as SseEvent, v as SseOptions, V as ValueFactory, w as WsArgs, x as createLogger } from './runtime-DXyEqo6n.js';
 export { C as CloveBootError, H as HttpError, e as error, i as isHttpError } from './errors-il7qK9dp.js';
 import { Server } from 'node:http';
-import { A as AppOptions, C as CloveApp } from './app-BHqctXri.js';
-export { c as createApp } from './app-BHqctXri.js';
+import { A as AppOptions, C as CloveApp } from './app-DDYIT_UD.js';
+export { c as createApp } from './app-DDYIT_UD.js';
 import 'node:stream';
 
 declare const get: (handler: RouteHandlerFn) => RouteDefinition;
@@ -68,7 +68,7 @@ declare function bootstrap(options?: BootstrapOptions): Promise<Clove>;
  */
 declare function engine(host?: ExpressLike, options?: AppOptions): Promise<CloveEngine>;
 interface ExpressLike {
-    use(handler: (...args: any[]) => void): unknown;
+    use(handler: (...args: never[]) => void): unknown;
 }
 type CloveEngine = CloveApp["middleware"] & {
     app: CloveApp;
@@ -112,6 +112,6 @@ type CloveService<T> = T extends ServiceDefinition<infer R> ? Awaited<R> : never
  * Extracts the value a `di(...)` definition resolves to. Used by the generated
  * `.clove/types.d.ts`.
  */
-type CloveDi<T> = T extends DiDefinition<infer R> ? R extends (...args: any[]) => infer F ? Awaited<F> : R : never;
+type CloveDi<T> = T extends DiDefinition<infer R> ? R extends (...args: never[]) => infer F ? Awaited<F> : R : never;
 
 export { AppOptions, type BootstrapOptions, type Clove, CloveApp, type CloveDi, type CloveEngine, type CloveService, DiDefinition, DiSpec, type LoadEnvOptions, MiddlewareDefinition, MiddlewareFn, RouteDefinition, RouteHandlerFn, ServiceDefinition, ServiceFactory, SseHandlerFn, SseRouteDefinition, WsDefinition, WsHandlerFn, all, bootstrap, del, di, engine, get, head, loadEnv, middleware, options, parseEnv, patch, post, put, service, sse, ws };

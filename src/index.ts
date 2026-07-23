@@ -79,7 +79,7 @@ export type CloveService<T> =
  */
 export type CloveDi<T> =
   T extends import("./types.js").DiDefinition<infer R>
-    ? R extends (...args: any[]) => infer F
+    ? R extends (...args: never[]) => infer F
       ? Awaited<F>
       : R
     : never

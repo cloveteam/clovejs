@@ -106,7 +106,7 @@ export interface McpToolDefinition extends Definition<"mcpTool"> {
   description: string
   title: string | null
   input: InputSchema | null
-  handler: McpToolHandler<any, unknown>
+  handler: StoredToolHandler
   /** Collected metadata. Read by the runtime, written by `.meta()`. */
   [META]: McpToolMeta
   /** Attach tool metadata and annotations. Chainable; merges with previous calls. */
@@ -149,6 +149,17 @@ export type McpPromptHandler<Input, Result> = (
   args: McpToolArgs,
 ) => Result | Promise<Result>
 
+/**
+ * The storage form of a handler once its concrete input schema has been erased.
+ * The input is `any` rather than `unknown` on purpose: parameter contravariance
+ * means a handler written against a specific schema is only assignable here when
+ * the stored input type is `any`.
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export type StoredToolHandler = McpToolHandler<any, unknown>
+export type StoredPromptHandler = McpPromptHandler<any, unknown>
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 export interface McpPromptSpec<S extends InputSchema | undefined, Result> {
   name?: string
   description: string
@@ -165,7 +176,7 @@ export interface McpPromptDefinition extends Definition<"mcpPrompt"> {
   description: string
   title: string | null
   input: InputSchema | null
-  handler: McpPromptHandler<any, unknown>
+  handler: StoredPromptHandler
 }
 
 /** A message in a prompt result. Plain strings are treated as user messages. */
@@ -187,7 +198,7 @@ export interface McpTool {
   input: InputSchema | null
   /** The input schema normalised at boot, ready to hand to the MCP SDK. */
   shape: Record<string, unknown> | undefined
-  handler: McpToolHandler<any, unknown>
+  handler: StoredToolHandler
   meta: Readonly<McpToolMeta>
   /** Absolute path of the file this tool came from. Used in error messages. */
   file: string
@@ -210,7 +221,7 @@ export interface McpPrompt {
   input: InputSchema | null
   /** The argument schema normalised and validated at boot. */
   shape: Record<string, unknown> | undefined
-  handler: McpPromptHandler<any, unknown>
+  handler: StoredPromptHandler
   file: string
 }
 

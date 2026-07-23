@@ -61,11 +61,15 @@ export class CloveRequest {
    * The parsed body. Populated by the pipeline before handlers run, so it is
    * safe to access synchronously as `req.body`.
    */
+  // Typed `any` so handlers can read `req.body.field` without a cast, matching
+  // the ergonomics of Express's `req.body`. The shape is validated per-route.
+  /* eslint-disable @typescript-eslint/no-explicit-any */
   get body(): any {
     return this.#body
   }
 
   set body(value: any) {
+    /* eslint-enable @typescript-eslint/no-explicit-any */
     this.#body = value
     this.#bodyRead = true
   }

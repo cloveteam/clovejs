@@ -64,7 +64,12 @@ export interface McpRuntimeOptions {
   auth?: McpAuth
 }
 
-/** The slice of the MCP SDK this runtime uses, resolved lazily. */
+/**
+ * The slice of the MCP SDK this runtime uses, resolved lazily. The SDK is an
+ * optional peer dependency loaded at runtime, so its constructors and instances
+ * are untyped here on purpose rather than pulling its types into the build.
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 interface Sdk {
   McpServer: any
   ResourceTemplate: any
@@ -75,6 +80,7 @@ interface Sdk {
 interface Live {
   server: any
   transport: any
+  /* eslint-enable @typescript-eslint/no-explicit-any */
   /** Parent container for calls on this connection: session- or root-scoped. */
   parent: Container
   /** Set when `parent` is a session container that needs persisting. */
@@ -263,6 +269,8 @@ export class McpRuntime {
   }
 
   /** Builds an MCP server with every scanned tool, resource and prompt bound. */
+  // Returns an untyped SDK `McpServer` instance; see the `Sdk` interface above.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   #buildServer(sdk: Sdk, parent: () => Container): any {
     const { scan, serverInfo } = this.#options
     const server = new sdk.McpServer(
@@ -362,18 +370,27 @@ export class McpRuntime {
   async #call<T>(
     parent: Container,
     file: string,
-    extra: any,
-    run: (ctx: any, args: McpToolArgs) => Promise<T>,
+    extra: unknown,
+    run: (ctx: RuntimeCtx, args: McpToolArgs) => Promise<T>,
     soft = false,
   ): Promise<T | { content: Array<{ type: "text"; text: string }>; isError: true }> {
+    // The MCP SDK hands the callback a loosely-typed "extra" bag; read the few
+    // fields we care about through a narrowed view rather than `any`.
+    const info = extra as
+      | {
+          sessionId?: unknown
+          signal?: AbortSignal
+          sendNotification?: (notification: unknown) => void
+        }
+      | undefined
     const container = parent.createChild("request")
     const args: McpToolArgs = {
       ctx: container.ctx,
-      sessionId: typeof extra?.sessionId === "string" ? extra.sessionId : null,
+      sessionId: typeof info?.sessionId === "string" ? info.sessionId : null,
       auth: this.#authStore.getStore() ?? null,
-      signal: extra?.signal ?? new AbortController().signal,
+      signal: info?.signal ?? new AbortController().signal,
       log: (level, message) => {
-        void extra?.sendNotification?.({
+        void info?.sendNotification?.({
           method: "notifications/message",
           params: { level, data: message },
         })

@@ -113,7 +113,7 @@ export async function engine(host?: ExpressLike, options: AppOptions = {}): Prom
 }
 
 export interface ExpressLike {
-  use(handler: (...args: any[]) => void): unknown
+  use(handler: (...args: never[]) => void): unknown
 }
 
 export type CloveEngine = CloveApp["middleware"] & {

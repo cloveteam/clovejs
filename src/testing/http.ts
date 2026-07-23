@@ -6,7 +6,11 @@ export interface TestResponse {
   status: number
   headers: Headers
   text: string
-  /** The body parsed as JSON, or `undefined` when it was not JSON. */
+  /**
+   * The body parsed as JSON, or `undefined` when it was not JSON. Typed `any`
+   * so tests can assert on fields without casting, as with `fetch`'s `.json()`.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   json: any
   /** Raw `Set-Cookie` header values, one per cookie. */
   cookies: string[]
@@ -146,6 +150,7 @@ export function readResponse(res: MockResponse): TestResponse {
   }
 
   const text = res.bodyText()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let json: any
   try {
     json = text ? JSON.parse(text) : undefined
