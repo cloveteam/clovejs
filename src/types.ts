@@ -97,18 +97,21 @@ export interface MiddlewareDefinition extends Definition<"middleware"> {
 /**
  * A service factory.
  *
- * The return type is a bare `T` rather than `T | Promise<T>` on purpose: with a
- * union, `this` inside the returned object literal widens to include
- * `PromiseLike`, and calling a sibling method (`this.sign(user)`) stops
- * type-checking. Callers unwrap with `Awaited<T>` instead.
+ * `M` is the resolved service value (the object of methods), not the raw return
+ * of the factory. Weaving `ThisType<M>` *inside* the `Promise` is what keeps
+ * `this` typed as `M` in an `async` factory: without it, the object literal sits
+ * at the async return position, where its contextual type widens to
+ * `M | PromiseLike<M>` and calling a sibling method (`this.sign(user)`) stops
+ * type-checking. Applying `ThisType<M>` to the awaited type — rather than to the
+ * outer union — makes `this` resolve to `M` for both sync and async factories.
  */
-export type ServiceFactory<T = any> = (
+export type ServiceFactory<M = any> = (
   ctx: RuntimeCtx,
   hooks: LifecycleHooks,
-) => T
+) => (M & ThisType<M>) | Promise<M & ThisType<M>>
 
-export interface ServiceDefinition<T = any> extends Definition<"service"> {
-  factory: ServiceFactory<T>
+export interface ServiceDefinition<M = any> extends Definition<"service"> {
+  factory: ServiceFactory<M>
 }
 
 export type ValueFactory<T = any> = (ctx: RuntimeCtx, hooks: LifecycleHooks) => T

@@ -81,7 +81,10 @@ type MiddlewareFn = (args: MiddlewareArgs) => unknown | Promise<unknown>
 ## Services and values
 
 ```ts
-type ServiceFactory<T = any> = (ctx: RuntimeCtx, hooks: LifecycleHooks) => T
+type ServiceFactory<M = any> = (
+  ctx: RuntimeCtx,
+  hooks: LifecycleHooks,
+) => (M & ThisType<M>) | Promise<M & ThisType<M>>
 type ValueFactory<T = any> = (ctx: RuntimeCtx, hooks: LifecycleHooks) => T
 
 interface DiSpec<T = any> {
@@ -94,9 +97,9 @@ interface LifecycleHooks {
 }
 ```
 
-`ServiceFactory` returns a bare `T` rather than `T | Promise<T>` deliberately:
-with a union, `this` inside a returned object literal widens to include
-`PromiseLike`, breaking sibling-method calls. Consumers unwrap with `Awaited<T>`.
+`M` is the resolved service value. The `ThisType<M>` woven into the awaited type
+keeps `this` typed as `M` inside the factory. Consumers unwrap the definition
+with `Awaited<M>` (which is just `M`).
 
 ## WebSockets
 

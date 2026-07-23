@@ -1,9 +1,9 @@
-import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, W as WsHandlerFn, e as WsDefinition } from './runtime-RKN6Dei4.js';
-export { C as CloveRequest, f as CloveResponse, g as CookieOptions, h as Ctx, H as HttpMethod, L as LifecycleHooks, i as Lifetime, j as LogLevel, k as Logger, l as MemorySessionStore, m as MiddlewareArgs, n as Route, o as RouteMeta, p as RuntimeCtx, q as SessionStore, V as ValueFactory, r as WsArgs, s as createLogger } from './runtime-RKN6Dei4.js';
+import { R as RouteHandlerFn, a as RouteDefinition, D as DiSpec, b as DiDefinition, M as MiddlewareFn, c as MiddlewareDefinition, S as ServiceFactory, d as ServiceDefinition, W as WsHandlerFn, e as WsDefinition } from './runtime-DJ9Y3g8M.js';
+export { C as CloveRequest, f as CloveResponse, g as CookieOptions, h as Ctx, H as HttpMethod, L as LifecycleHooks, i as Lifetime, j as LogLevel, k as Logger, l as MemorySessionStore, m as MiddlewareArgs, n as Route, o as RouteMeta, p as RuntimeCtx, q as SessionStore, V as ValueFactory, r as WsArgs, s as createLogger } from './runtime-DJ9Y3g8M.js';
 export { C as CloveBootError, H as HttpError, e as error, i as isHttpError } from './errors-il7qK9dp.js';
 import { Server } from 'node:http';
-import { A as AppOptions, C as CloveApp } from './app-B3Z1Sxui.js';
-export { c as createApp } from './app-B3Z1Sxui.js';
+import { A as AppOptions, C as CloveApp } from './app-BmfAYOKj.js';
+export { c as createApp } from './app-BmfAYOKj.js';
 import 'node:stream';
 
 declare const get: (handler: RouteHandlerFn) => RouteDefinition;
@@ -16,7 +16,7 @@ declare const options: (handler: RouteHandlerFn) => RouteDefinition;
 /** Matches every HTTP method at this path. */
 declare const all: (handler: RouteHandlerFn) => RouteDefinition;
 declare function middleware(fn: MiddlewareFn): MiddlewareDefinition;
-declare function service<T>(factory: ServiceFactory<T>): ServiceDefinition<T>;
+declare function service<M>(factory: ServiceFactory<M>): ServiceDefinition<M>;
 declare function di<T>(spec: DiSpec<T>): DiDefinition<T>;
 declare function ws(handler: WsHandlerFn): WsDefinition;
 

@@ -43,7 +43,7 @@ export function middleware(fn: MiddlewareFn): MiddlewareDefinition {
   return { [KIND]: "middleware", fn }
 }
 
-export function service<T>(factory: ServiceFactory<T>): ServiceDefinition<T> {
+export function service<M>(factory: ServiceFactory<M>): ServiceDefinition<M> {
   return { [KIND]: "service", factory }
 }
 

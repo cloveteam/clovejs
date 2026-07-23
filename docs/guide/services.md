@@ -66,25 +66,20 @@ export default service(async (ctx) => {
 })
 ```
 
-## Calling sibling methods
+## Private helpers
 
-::: warning Prefer a local function over `this`
-TypeScript cannot infer a method's return type when it depends on the object
-literal that contains it, so `this` usage inside an async factory forces you to
-annotate return types by hand.
-:::
+To share logic between methods without exposing it on the service, declare a
+plain function in the closure:
 
 ```ts
 export default service(async (ctx) => {
-  // Declare it once in the closure...
   function hash(password: string) {
     return createHash("sha256").update(password).digest("hex")
   }
 
   return {
-    hash,                                    // ...expose it...
     verify(password: string, digest: string) {
-      return hash(password) === digest       // ...and call it directly.
+      return hash(password) === digest        // private to the closure
     },
   }
 })

@@ -50,16 +50,14 @@ run in [priority order](/guide/middlewares#ordering).
 ## `service(factory)`
 
 ```ts
-service<T>(factory: (ctx, hooks) => T | Promise<T>): ServiceDefinition<T>
+service<M>(
+  factory: (ctx, hooks) => (M & ThisType<M>) | Promise<M & ThisType<M>>,
+): ServiceDefinition<M>
 ```
 
 A singleton, created once at boot and exposed as `ctx.<filename>`. `hooks`
-provides `onDestroy(fn)`.
-
-The factory's declared return type is a bare `T` rather than `T | Promise<T>`
-on purpose: with a union, `this` inside a returned object literal widens to
-include `PromiseLike`, and calling a sibling method stops type-checking.
-Callers unwrap with `Awaited<T>`.
+provides `onDestroy(fn)`. `M` is the resolved service value — the object of
+methods.
 
 ## `di(spec)`
 

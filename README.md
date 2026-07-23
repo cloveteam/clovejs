@@ -177,11 +177,6 @@ export default service(async (ctx, { onDestroy }) => {
 })
 ```
 
-> **Calling sibling methods.** Prefer a local function in the closure over
-> `this.other()`. TypeScript cannot infer a method's return type when it
-> depends on the object literal that contains it, so `this` usage inside an
-> async factory forces you to annotate return types by hand.
-
 ## Value dependencies and lifetime scopes
 
 Files in `di/` inject plain values. Each declares how long it lives:
