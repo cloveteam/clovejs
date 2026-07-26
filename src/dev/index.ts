@@ -65,7 +65,10 @@ export async function startDevServer(
     ...options,
     rootDir,
     sourceDir,
-    logLevel: "silent",
+    // Not silenced: the app logger is what surfaces runtime failures with no
+    // response to carry them — a rejected message, a socket error. Dev is
+    // exactly where those must be visible.
+    logLevel: options.logLevel ?? "debug",
     moduleCache: false,
   })
   let reloading: Promise<void> | undefined
@@ -113,7 +116,7 @@ export async function startDevServer(
           ...options,
           rootDir,
           sourceDir,
-          logLevel: "silent",
+          logLevel: options.logLevel ?? "debug",
           moduleCache: false,
         })
         const previous = app
@@ -231,6 +234,11 @@ function logSummary(app: CloveApp, logger: Logger, url: string): void {
   }
   for (const path of app.scan.socketHandlers.keys()) {
     logger.info(`  ${"WS".padEnd(7)} ${path}`)
+  }
+  for (const consumer of app.scan.bus.consumers) {
+    logger.info(
+      `  ${"BUS".padEnd(7)} ${consumer.channel}  →  ${consumer.bus}/${consumer.subscription}`,
+    )
   }
   if (!app.mcp.empty) {
     const { tools, resources, prompts } = app.mcp.counts

@@ -1,5 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
+import { BusRuntime } from "./bus/runtime.js"
+import type { Publisher } from "./bus/types.js"
 import { CacheRuntime } from "./cache/runtime.js"
 import { isCacheStore, MemoryCacheStore, type CacheStore } from "./cache/store.js"
 import { Container } from "./container/container.js"
@@ -48,6 +50,14 @@ export interface AppOptions {
    * that a reload actually re-reads changed files.
    */
   moduleCache?: boolean
+  /**
+   * When consumers start receiving. `"auto"` (the default) subscribes during
+   * boot; `"manual"` leaves subscriptions unstarted until `app.bus.start()`,
+   * which is what tests want.
+   */
+  bus?: "auto" | "manual"
+  /** How long shutdown waits for in-flight deliveries. Defaults to 30s. */
+  busDrainTimeout?: number
   /** Path the MCP endpoint is served from. Defaults to `/mcp`. */
   mcpPath?: string
   /** Name and version reported to MCP clients. Defaults to the package name. */
@@ -80,9 +90,11 @@ export class CloveApp {
   readonly mcp: McpRuntime
   readonly sessions: SessionManager
   readonly cache: CacheRuntime
+  readonly bus: BusRuntime
   readonly scan: ScanResult
 
   #options: Required<Pick<AppOptions, "bodyLimit" | "exposeErrors">>
+  #eagerRequestKeys: string[]
   #closed = false
 
   constructor(
@@ -93,6 +105,7 @@ export class CloveApp {
     ws: WsRuntime,
     mcp: McpRuntime,
     cache: CacheRuntime,
+    bus: BusRuntime,
     options: Required<Pick<AppOptions, "bodyLimit" | "exposeErrors">>,
   ) {
     this.scan = scan
@@ -104,7 +117,9 @@ export class CloveApp {
     this.ws = ws
     this.mcp = mcp
     this.cache = cache
+    this.bus = bus
     this.#options = options
+    this.#eagerRequestKeys = scan.registry.eagerKeys("request")
   }
 
   /**
@@ -160,6 +175,12 @@ export class CloveApp {
         : this.root
 
       requestContainer = parent.createChild("request")
+
+      // `di({ eager: true })` values are the per-request hook: their factories
+      // would otherwise never run, since resolution is lazy.
+      if (this.#eagerRequestKeys.length > 0) {
+        await requestContainer.ensure(this.#eagerRequestKeys)
+      }
 
       // Populate `req.body` up front so handlers can read it synchronously.
       await req.readBody()
@@ -270,10 +291,14 @@ export class CloveApp {
     this.ws.handleUpgrade(req, socket, head)
   }
 
-  /** Disposes sockets, sessions and the singleton scope, in that order. */
+  /** Disposes deliveries, sockets, sessions and the singleton scope, in that order. */
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    // Consumers drain first, so a handler still finishing has every service it
+    // depends on. Bus connections themselves close in `root.dispose()`, last,
+    // because their `onDestroy` was registered by a singleton factory.
+    await this.bus.close().catch((err) => this.logger.error("bus close:", err))
     await this.mcp.close().catch((err) => this.logger.error("mcp close:", err))
     await this.ws.close().catch((err) => this.logger.error("ws close:", err))
     await this.sessions
@@ -359,6 +384,34 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     },
   })
 
+  if (scan.registry.has("bus")) {
+    throw new CloveBootError(
+      '`ctx.bus` is reserved by CloveJS. Rename the service or DI value that provides "bus".',
+      [scan.registry.get("bus")!.file],
+    )
+  }
+  // One property per `bus/` file, each narrowed to its publish half — a handler
+  // publishes, only the runtime subscribes. Registered even with no buses, so
+  // `ctx.bus` is never undefined.
+  scan.registry.add({
+    key: "bus",
+    kind: "builtin",
+    lifetime: "singleton",
+    file: "<builtin>",
+    isFactory: true,
+    factory: async (ctx) => {
+      const publishers: Record<string, Publisher> = {}
+      for (const entry of scan.bus.buses) {
+        const instance = (await ctx[entry.key]) as Publisher
+        publishers[entry.name] = {
+          publish: (channel, payload, publishOptions) =>
+            instance.publish(channel, payload, publishOptions),
+        }
+      }
+      return Object.freeze(publishers)
+    },
+  })
+
   // Apply test overrides before any container reads the registry, so singletons
   // resolve against the fakes rather than the real dependencies.
   if (options.overrides) {
@@ -422,7 +475,22 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     exposeErrors: options.exposeErrors ?? isDev,
   })
 
-  return new CloveApp(scan, root, logger, sessions, ws, mcp, cache, {
+  const bus = new BusRuntime({
+    scan: scan.bus,
+    root,
+    registry: scan.registry,
+    logger,
+    ...(options.busDrainTimeout !== undefined
+      ? { drainTimeout: options.busDrainTimeout }
+      : {}),
+  })
+  // Resolve every bus and check it against its consumers before anything
+  // subscribes: a project asking for a guarantee its broker cannot provide
+  // fails here, naming both files, rather than on a poison message later.
+  await bus.init()
+  if ((options.bus ?? "auto") === "auto") await bus.start()
+
+  return new CloveApp(scan, root, logger, sessions, ws, mcp, cache, bus, {
     bodyLimit: options.bodyLimit ?? DEFAULT_BODY_LIMIT,
     exposeErrors: options.exposeErrors ?? isDev,
   })

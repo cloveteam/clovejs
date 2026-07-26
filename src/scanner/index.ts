@@ -2,6 +2,15 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Registry, type Provider } from "../container/registry.js"
 import { validateCachePolicy } from "../cache/runtime.js"
+import { validateRetryPolicy } from "../bus/retry.js"
+import {
+  busProviderKey,
+  type BusScan,
+  type LoadedBus,
+  type LoadedConsumer,
+} from "../bus/runtime.js"
+import { compileValidator } from "../bus/schema.js"
+import { RETRY, type BusDefinition, type ConsumerDefinition } from "../bus/types.js"
 import { CloveBootError } from "../errors.js"
 import { deriveMcpName, deriveResourceUri } from "../mcp/paths.js"
 import { assertPromptShape, toRawShape } from "../mcp/schema.js"
@@ -35,7 +44,7 @@ import {
   parsePriority,
   stripPriority,
 } from "./paths.js"
-import { walkDir } from "./walk.js"
+import { stripExtension, walkDir } from "./walk.js"
 
 export interface LoadedMiddleware {
   name: string
@@ -56,6 +65,8 @@ export interface ScanResult {
   sockets: RouterTrie
   socketHandlers: Map<string, SocketRoute>
   mcp: McpScan
+  /** Buses from `bus/` and their consumers from `consumers/`. */
+  bus: BusScan
   registry: Registry
   /** The registered template engine, or null when the project has no views.ts. */
   views: ViewEngine | null
@@ -78,6 +89,8 @@ export type ConventionDir =
   | "services"
   | "middlewares"
   | "mcp"
+  | "bus"
+  | "consumers"
 
 export const DEFAULT_DIRS: Record<ConventionDir, string> = {
   api: "api",
@@ -87,6 +100,8 @@ export const DEFAULT_DIRS: Record<ConventionDir, string> = {
   services: "services",
   middlewares: "middlewares",
   mcp: "mcp",
+  bus: "bus",
+  consumers: "consumers",
 }
 
 /** Subdirectories of `mcp/`, and the definition each one must export. */
@@ -153,12 +168,20 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
             [file.absolute],
           )
         }
+        if (d.eager && !d.isFactory) {
+          throw new CloveBootError(
+            "`eager: true` only makes sense with a factory: a plain value has " +
+              "nothing to run. Drop it, or pass a function as `value`.",
+            [file.absolute],
+          )
+        }
         registry.add({
           key,
           kind: "di",
           lifetime: d.lifetime,
           file: file.absolute,
           isFactory: d.isFactory,
+          ...(d.eager ? { eager: true } : {}),
           ...(d.isFactory
             ? { factory: d.value as NonNullable<Provider["factory"]> }
             : { value: d.value }),
@@ -315,6 +338,123 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
   }
   middlewares.sort(comparePriority)
 
+  // --- bus/ ----------------------------------------------------------------
+  // One file per connection, not a single `bus.ts`: a project with a fan-out
+  // bus and two brokers on different servers is ordinary, and the filename is
+  // the name the rest of the project addresses it by.
+  const buses: LoadedBus[] = []
+  const busNames = new Map<string, string>()
+  for (const file of await walkDir(join(sourceDir, dirs.bus))) {
+    files.push(file.absolute)
+    const def = await loadDefault(loader, file.absolute)
+    if (definitionKind(def) !== "bus") {
+      throw new CloveBootError(
+        `Files in ${dirs.bus}/ must default-export bus(...), ` +
+          `but this one exports ${describe(definitionKind(def))}.`,
+        [file.absolute],
+      )
+    }
+    const name = deriveContextKey(file.relative)
+    if (name === "publish") {
+      throw new CloveBootError(
+        `A bus cannot be named "publish": it would shadow \`ctx.bus.publish\`. ` +
+          "Rename the file.",
+        [file.absolute],
+      )
+    }
+    claim(busNames, name, file.absolute, `bus name "${name}"`)
+
+    const d = def as BusDefinition
+    registry.add({
+      key: busProviderKey(name),
+      kind: "builtin",
+      lifetime: "singleton",
+      file: file.absolute,
+      isFactory: d.isFactory,
+      ...(d.isFactory
+        ? { factory: d.bus as NonNullable<Provider["factory"]> }
+        : { value: d.bus }),
+    })
+    buses.push({ name, key: busProviderKey(name), file: file.absolute })
+  }
+
+  // --- consumers/ ----------------------------------------------------------
+  // Nothing is derived from the path here. A channel is a contract shared with
+  // the producer, and one channel routinely has several independent consumers,
+  // so both `channel` and `subscription` are written out; the path only names
+  // the consumer in logs and boot errors.
+  const consumers: LoadedConsumer[] = []
+  const consumerKeys = new Map<string, string>()
+  for (const file of await walkDir(join(sourceDir, dirs.consumers))) {
+    files.push(file.absolute)
+    const def = await loadDefault(loader, file.absolute)
+    if (definitionKind(def) !== "consumer") {
+      throw new CloveBootError(
+        `Files in ${dirs.consumers}/ must default-export consume(...), ` +
+          `but this one exports ${describe(definitionKind(def))}.`,
+        [file.absolute],
+      )
+    }
+    const d = def as ConsumerDefinition
+
+    for (const field of ["bus", "channel", "subscription"] as const) {
+      if (typeof d[field] !== "string" || d[field].length === 0) {
+        throw new CloveBootError(
+          `consume({ ${field} }) is required and must be a non-empty string.`,
+          [file.absolute],
+        )
+      }
+    }
+    if (d.maxInFlight !== null && (!Number.isInteger(d.maxInFlight) || d.maxInFlight < 1)) {
+      throw new CloveBootError(
+        "`maxInFlight` must be an integer of at least 1. It defaults to 1, " +
+          "because any higher value forfeits per-key ordering.",
+        [file.absolute],
+      )
+    }
+    if (!busNames.has(d.bus)) {
+      throw new CloveBootError(
+        `Unknown bus "${d.bus}". ` +
+          (buses.length
+            ? `This project defines: ${buses.map((b) => b.name).join(", ")}.`
+            : `This project has no ${dirs.bus}/ directory — add ` +
+              `${dirs.bus}/${d.bus}.ts default-exporting bus(...).`),
+        [file.absolute],
+      )
+    }
+
+    const name = stripExtension(file.relative)
+    claim(
+      consumerKeys,
+      `${d.bus} ${d.channel} ${d.subscription}`,
+      file.absolute,
+      `consumer for channel "${d.channel}" with subscription "${d.subscription}" ` +
+        `on bus "${d.bus}"`,
+    )
+
+    consumers.push({
+      name,
+      bus: d.bus,
+      channel: d.channel,
+      subscription: d.subscription,
+      maxInFlight: d.maxInFlight ?? 1,
+      input: compileValidator(d.input, file.absolute),
+      handler: d.handler,
+      retry: validateRetryPolicy(d[RETRY], file.absolute),
+      file: file.absolute,
+    })
+  }
+
+  if (consumers.length > 0 && buses.length === 0) {
+    throw new CloveBootError(
+      `${dirs.consumers}/ has ${consumers.length} consumer(s) but the project ` +
+        `defines no bus. Add ${dirs.bus}/<name>.ts default-exporting bus(...) — ` +
+        "there is deliberately no implicit in-memory fallback, because that " +
+        "failure mode is a production incident where events vanish silently.",
+      consumers.map((c) => c.file),
+    )
+  }
+
   // --- views.ts (optional, single reserved file) ---------------------------
   // Like `mcp/auth.ts`: there is at most one template engine per project, so it
   // is a lone file at the source root, not a convention directory.
@@ -335,7 +475,17 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     break
   }
 
-  return { routes, middlewares, sockets, socketHandlers, mcp, registry, views, files }
+  return {
+    routes,
+    middlewares,
+    sockets,
+    socketHandlers,
+    mcp,
+    bus: { buses, consumers },
+    registry,
+    views,
+    files,
+  }
 }
 
 /**

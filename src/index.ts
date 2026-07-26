@@ -18,6 +18,12 @@ export {
 
 export { error, HttpError, isHttpError, CloveBootError } from "./errors.js"
 
+export {
+  CircularDependencyError,
+  ScopeUnavailableError,
+} from "./container/container.js"
+export type { ChildScopeOptions } from "./container/container.js"
+
 export { bootstrap, engine } from "./bootstrap.js"
 export type { BootstrapOptions, Clove, CloveEngine } from "./bootstrap.js"
 
@@ -46,6 +52,7 @@ export type { Logger, LogLevel } from "./container/logger.js"
 
 export type {
   Ctx,
+  BusRegistry,
   CacheContext,
   CacheController,
   CacheDuration,

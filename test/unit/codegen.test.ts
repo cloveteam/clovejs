@@ -88,3 +88,39 @@ describe("tsconfigIncludeWarning", () => {
     expect(await tsconfigIncludeWarning(dir)).toBeNull()
   })
 })
+
+describe("generateTypes bus registry", () => {
+  const BUS = `import { bus, memoryBus } from "clovejs/bus"\nexport default bus(memoryBus())\n`
+
+  it("emits one BusRegistry property per bus/ file", async () => {
+    dir = await project({
+      "src/bus/events.ts": BUS,
+      "src/bus/audit.ts": BUS,
+    })
+    const types = await generated(dir)
+    expect(types).toContain('import type { Publisher } from "clovejs/bus"')
+    expect(types).toContain("interface BusRegistry {")
+    expect(types).toContain("    audit: Publisher")
+    expect(types).toContain("    events: Publisher")
+  })
+
+  it("flattens nested bus files the way ctx keys flatten", async () => {
+    dir = await project({ "src/bus/rabbit/orders.ts": BUS })
+    const types = await generated(dir)
+    expect(types).toContain("    rabbitOrders: Publisher")
+  })
+
+  it("omits the registry and its import when the project has no buses", async () => {
+    dir = await project({ "src/services/notes.ts": SERVICE })
+    const types = await generated(dir)
+    expect(types).not.toContain("BusRegistry")
+    expect(types).not.toContain("clovejs/bus")
+  })
+
+  it("emits a bus registry even when there are no services or di values", async () => {
+    dir = await project({ "src/bus/events.ts": BUS })
+    const types = await generated(dir)
+    expect(types).toContain("interface BusRegistry {")
+    expect(types).toContain("    events: Publisher")
+  })
+})

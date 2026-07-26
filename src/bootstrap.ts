@@ -49,9 +49,14 @@ export async function bootstrap(options: BootstrapOptions = {}): Promise<Clove> 
   const routeCount = app.routes.list().length
   const socketCount = app.scan.socketHandlers.size
   const { tools } = app.mcp.counts
+  const { buses, consumers } = app.bus.counts
   app.logger.info(
     `CloveJS listening on ${url} — ${routeCount} route${routeCount === 1 ? "" : "s"}` +
       (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "") +
+      (buses
+        ? `, ${consumers} consumer${consumers === 1 ? "" : "s"} on ` +
+          `${buses} bus${buses === 1 ? "" : "es"}`
+        : "") +
       (app.mcp.empty
         ? ""
         : `, MCP on ${app.mcp.path} with ${tools} tool${tools === 1 ? "" : "s"}`),

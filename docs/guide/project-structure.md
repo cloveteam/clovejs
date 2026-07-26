@@ -9,6 +9,8 @@ src/
   api/          route handlers      -> HTTP endpoints under /api
   web/          page handlers       -> HTTP endpoints under /
   ws/           socket handlers     -> WebSocket endpoints
+  bus/          broker connections  -> ctx.bus.<filename>
+  consumers/    message handlers    -> subscriptions
   mcp/          tools, resources,
                 prompts             -> MCP server
   di/           injectable values
@@ -25,6 +27,8 @@ src/
 | `api/` | Modules whose default export is `get()`, `post()`, … | HTTP routes under `/api`, path mirroring the file path |
 | `web/` | Same as `api/` | The same, but mounted at the root `/` — for [HTML pages](/guide/routes#web-pages-at-the-root) |
 | `ws/` | Modules whose default export is `ws()` | WebSocket endpoints under `/ws/…` |
+| `bus/` | Modules whose default export is `bus()` | `ctx.bus.<filename>`, one broker connection each — see [Message bus](/guide/message-bus) |
+| `consumers/` | Modules whose default export is `consume()` | A subscription each. The path names the consumer; the channel is declared in the file |
 | `mcp/` | `tools/`, `resources/` and `prompts/` subdirectories | An [MCP server](/guide/mcp) at `/mcp` |
 | `services/` | Modules whose default export is `service()` | `ctx.<filename>`, a singleton created at boot |
 | `di/` | Modules whose default export is `di()` | `ctx.<filename>`, scoped per its declared lifetime |
@@ -42,10 +46,16 @@ becomes `POST /api/v1/login`.
 This means renaming a file is a breaking change to your own code — which is the
 point. There is exactly one place a name is declared.
 
+`consumers/` is the deliberate exception: a channel is a contract shared with
+whoever publishes it, not a name this project owns, so it is declared in the
+file rather than derived from the path. See
+[Message bus](/guide/message-bus#nothing-is-derived-from-the-file-path).
+
 ## `.clove/`
 
 `clove dev`, `clove build` and `clove types` write `.clove/types.d.ts`, which
-augments the `Ctx` interface with one entry per file in `services/` and `di/`.
+augments the `Ctx` interface with one entry per file in `services/` and `di/`,
+and the `BusRegistry` interface with one per file in `bus/`.
 The scaffolded `tsconfig.json` includes it, and the scaffolded `.gitignore`
 excludes it — it is a build artefact, regenerated from the filesystem. See
 [Typed context](/guide/typed-context).
@@ -71,6 +81,8 @@ Identical, minus `src/` and `tsconfig.json`:
 ```
 api/
 ws/
+bus/
+consumers/
 di/
 services/
 middlewares/

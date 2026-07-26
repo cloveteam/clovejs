@@ -1,4 +1,7 @@
 import { createApp, CloveApp, type AppOptions } from "../app.js"
+import type { DispatchInput } from "../bus/runtime.js"
+import type { PublishRecord } from "../bus/memory.js"
+import type { DeliveryOutcome, PublishOptions } from "../bus/types.js"
 import { Container } from "../container/container.js"
 import { createLogger } from "../container/logger.js"
 import { Registry } from "../container/registry.js"
@@ -61,6 +64,31 @@ export interface CookieJar {
   all(): Record<string, string>
 }
 
+/** The message-bus surface, driven without a broker. */
+export interface TestBus {
+  /**
+   * Runs one message through the full delivery path — isolated scope, eager
+   * values, validation, handler, outcome — with no broker and no subscription.
+   * Returns the {@link DeliveryOutcome} to assert on.
+   *
+   * Pass `attempt` to exercise a redelivery, including retry exhaustion.
+   */
+  dispatch(input: DispatchInput): Promise<DeliveryOutcome>
+  /** Publishes as a producer would, reaching consumers once `start()` has run. */
+  publish(
+    bus: string,
+    channel: string,
+    payload: unknown,
+    options?: PublishOptions,
+  ): Promise<void>
+  /** Everything published through an in-memory bus, for assertions. */
+  published(bus: string): readonly PublishRecord[]
+  /** Subscribes consumers. Needed only under `createTestApp({ bus: "manual" })`. */
+  start(): Promise<void>
+  /** Waits for queued and in-flight deliveries. Returns how many were abandoned. */
+  drain(timeout?: number): Promise<number>
+}
+
 /** The MCP surface, dispatched without a JSON-RPC transport. */
 export interface TestMcp {
   callTool(name: string, input?: unknown, opts?: McpInvokeOptions): Promise<unknown>
@@ -88,6 +116,7 @@ export interface TestApp {
   sse(path: string, init?: TestRequestInit): TestSseStream
   readonly cookies: CookieJar
   readonly mcp: TestMcp
+  readonly bus: TestBus
   readonly ws: { connect(path: string): TestSocket }
   /** Clears the cookie jar without rebooting the app. */
   reset(): void
@@ -187,6 +216,15 @@ class TestAppHarness implements TestApp {
     callTool: (name, input, opts) => this.app.mcp.callTool(name, input, opts),
     readResource: (uri, opts) => this.app.mcp.readResource(uri, opts),
     getPrompt: (name, input, opts) => this.app.mcp.getPrompt(name, input, opts),
+  }
+
+  readonly bus: TestBus = {
+    dispatch: (input) => this.app.bus.dispatch(input),
+    publish: (bus, channel, payload, options) =>
+      this.app.bus.publisher(bus).publish(channel, payload, options),
+    published: (bus) => this.app.bus.published(bus),
+    start: () => this.app.bus.start(),
+    drain: (timeout) => this.app.bus.drain(timeout),
   }
 
   readonly ws = {

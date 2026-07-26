@@ -175,6 +175,57 @@ await socket.close() // runs the handler's onDestroy
 timeout 1s). `[param]` segments resolve the same way routes do, and `close()`
 disposes the request scope just like a real disconnect.
 
+## Message consumers
+
+`app.bus` drives [consumers](/guide/message-bus) with no broker and no timers.
+
+`dispatch` runs one message through the full delivery path — isolated scope,
+eager `di` values, validation, handler, outcome — and hands back the
+`DeliveryOutcome` to assert on:
+
+```ts
+const app = await createTestApp({ bus: "manual" })
+
+const outcome = await app.bus.dispatch({
+  bus: "events",
+  channel: "orders.created",
+  subscription: "billing",
+  payload: { orderId: "o1", total: 10 },
+})
+expect(outcome).toEqual({ action: "ack" })
+```
+
+`bus` and `subscription` are optional when the channel is unambiguous; with two
+consumers on one channel, omitting them is an error naming both.
+
+Pass `attempt` to test a redelivery — including the moment retries run out:
+
+```ts
+const last = await app.bus.dispatch({ …, attempt: 5 })
+expect(last).toMatchObject({ action: "reject" })
+expect(last.reason).toMatch(/Retries exhausted/)
+```
+
+To exercise the whole path instead, subscribe and publish. `drain()` waits for
+queued and in-flight deliveries — including retries, which enqueue more work as
+they settle:
+
+```ts
+await app.bus.start()
+await app.bus.publish("events", "orders.created", { orderId: "o2", total: 5 })
+await app.bus.drain()
+
+expect(app.bus.published("events")).toContainEqual(
+  expect.objectContaining({ channel: "invoice.created" }),
+)
+```
+
+`published(bus)` reads the record kept by `memoryBus()`; a real broker adapter
+cannot provide it, and asking says so.
+
+Without `{ bus: "manual" }` consumers subscribe during boot, which is what an
+end-to-end test wants — publish from an HTTP route and `drain()`.
+
 ## Unit level
 
 To test one handler with no project scan, build a `ctx` and run it directly.

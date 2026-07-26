@@ -73,6 +73,7 @@ export function di<T>(spec: DiSpec<T>): DiDefinition<T> {
     lifetime: spec.lifetime,
     value: spec.value,
     isFactory: typeof spec.value === "function",
+    eager: spec.eager ?? false,
   }
 }
 

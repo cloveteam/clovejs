@@ -1,0 +1,38 @@
+@host = http://localhost:3000
+
+### A clean order: billing invoices it, email thanks the customer,
+### analytics counts it. One publish, three independent consumers.
+POST {{host}}/api/orders
+Content-Type: application/json
+
+{ "orderId": "ord-1", "customer": "a@example.com", "total": 100 }
+
+### Retries with backoff: this customer fails three deliveries, then succeeds.
+### Watch the WARN lines in the dev server output.
+POST {{host}}/api/orders
+Content-Type: application/json
+
+{ "orderId": "ord-2", "customer": "flaky@example.com", "total": 50 }
+
+### Two rejections for two reasons: billing throws reject() on a negative
+### total, and email's zod schema refuses the same payload. Neither retries.
+POST {{host}}/api/orders
+Content-Type: application/json
+
+{ "orderId": "ord-3", "customer": "c@example.com", "total": -5 }
+
+### A different channel under the same prefix. Only the wildcard consumer
+### (orders.#) sees it — billing and email do not.
+POST {{host}}/api/orders/cancel
+Content-Type: application/json
+
+{ "orderId": "ord-1" }
+
+### The second bus: fire-and-forget, so publish() resolves before delivery.
+POST {{host}}/api/presence
+Content-Type: application/json
+
+{ "userId": "u-42" }
+
+### Everything the consumers have done so far.
+GET {{host}}/api/state

@@ -14,6 +14,12 @@ export interface Provider {
   /** Present when the provider is a plain literal value. */
   value?: unknown
   isFactory: boolean
+  /**
+   * Resolve as soon as a scope of this lifetime opens, rather than on first
+   * access. What turns a request-lifetime `di/` value into a per-request (and
+   * per-delivery) hook: a factory nothing reads otherwise never runs.
+   */
+  eager?: boolean
 }
 
 /**
@@ -67,5 +73,12 @@ export class Registry {
 
   byLifetime(lifetime: Lifetime): Provider[] {
     return this.all().filter((p) => p.lifetime === lifetime)
+  }
+
+  /** Keys to force-resolve whenever a scope of this lifetime is created. */
+  eagerKeys(lifetime: Lifetime): string[] {
+    return this.byLifetime(lifetime)
+      .filter((p) => p.eager === true)
+      .map((p) => p.key)
   }
 }

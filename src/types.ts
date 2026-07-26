@@ -11,7 +11,21 @@ import type { CloveResponse } from "./http/response.js"
 export interface Ctx {
   /** Built-in route-cache invalidation facade. */
   readonly cache: CacheController
+  /** The project's message buses, one property per file in `bus/`. */
+  readonly bus: BusRegistry
 }
+
+/**
+ * The message buses this project defines, keyed by their `bus/` filename.
+ *
+ * Empty in the framework itself and augmented by the generated
+ * `.clove/types.d.ts`, exactly like {@link Ctx} — so `ctx.bus.events` is typed,
+ * and `ctx.bus.evnets` is a compile error. The value type is `Publisher` from
+ * `clovejs/bus`; core deliberately does not name it, so nothing here depends on
+ * the bus module.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface BusRegistry {}
 
 /**
  * `ctx` as seen at runtime: the augmented interface plus arbitrary keys. The
@@ -32,6 +46,8 @@ export type DefinitionKind =
   | "di"
   | "ws"
   | "views"
+  | "bus"
+  | "consumer"
   | "mcpTool"
   | "mcpResource"
   | "mcpPrompt"
@@ -216,6 +232,16 @@ export type ValueFactory<T = any> = (ctx: RuntimeCtx, hooks: LifecycleHooks) => 
 export interface DiSpec<T = any> {
   lifetime: Lifetime
   value: T | ValueFactory<T>
+  /**
+   * Resolve as soon as a scope of this lifetime opens, instead of on first
+   * `ctx` access.
+   *
+   * Resolution is lazy by default, so a factory nothing reads never runs. Set
+   * this when the factory *is* the work — starting a trace span, opening a
+   * unit-of-work, incrementing a metric — and close it in `onDestroy`. That
+   * makes a `request`-lifetime value a per-request and per-delivery hook.
+   */
+  eager?: boolean
 }
 
 export interface DiDefinition<T = any> extends Definition<"di"> {
@@ -223,6 +249,7 @@ export interface DiDefinition<T = any> extends Definition<"di"> {
   value: T | ValueFactory<T>
   /** True when `value` was supplied as a factory function. */
   isFactory: boolean
+  eager: boolean
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -368,8 +395,11 @@ export type AnyDefinition =
   | DiDefinition
   | WsDefinition
   | ViewsDefinition
-  // MCP definitions are structurally identified the same way, but their shapes
-  // live in `src/mcp/` so the core never has to import the MCP SDK.
+  // Bus and MCP definitions are structurally identified the same way, but their
+  // shapes live in `src/bus/` and `src/mcp/` so the core never has to import
+  // the MCP SDK, and `clovejs` never has to name a messaging type.
+  | Definition<"bus">
+  | Definition<"consumer">
   | Definition<"mcpTool">
   | Definition<"mcpResource">
   | Definition<"mcpPrompt">

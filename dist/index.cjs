@@ -30,6 +30,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/index.ts
 var src_exports = {};
 __export(src_exports, {
+  CircularDependencyError: () => CircularDependencyError,
   CloveApp: () => CloveApp,
   CloveBootError: () => CloveBootError,
   CloveRequest: () => CloveRequest,
@@ -37,6 +38,7 @@ __export(src_exports, {
   HttpError: () => HttpError,
   MemoryCacheStore: () => MemoryCacheStore,
   MemorySessionStore: () => MemorySessionStore,
+  ScopeUnavailableError: () => ScopeUnavailableError,
   all: () => all,
   bootstrap: () => bootstrap,
   createApp: () => createApp,
@@ -274,7 +276,8 @@ function di(spec) {
     [KIND]: "di",
     lifetime: spec.lifetime,
     value: spec.value,
-    isFactory: typeof spec.value === "function"
+    isFactory: typeof spec.value === "function",
+    eager: spec.eager ?? false
   };
 }
 function ws(handler) {
@@ -328,8 +331,719 @@ ${files.map((f) => `  - ${f}`).join("\n")}` : message);
   }
 };
 
+// src/container/container.ts
+var SCOPE_DEPTH = {
+  singleton: 0,
+  session: 1,
+  request: 2
+};
+var CircularDependencyError = class extends Error {
+  constructor(chain) {
+    super(`Circular dependency detected: ${chain.join(" -> ")}`);
+    this.name = "CircularDependencyError";
+  }
+};
+var ScopeUnavailableError = class extends Error {
+  key;
+  lifetime;
+  constructor(key, lifetime, scope) {
+    super(
+      `Cannot resolve "${key}": it is declared with lifetime "${lifetime}", but this ${scope} scope has no ${lifetime} parent. Values of this lifetime are only available where a ${lifetime} scope exists \u2014 an HTTP request, not a message delivery or a socket connection.`
+    );
+    this.name = "ScopeUnavailableError";
+    this.key = key;
+    this.lifetime = lifetime;
+  }
+};
+var Container = class _Container {
+  scope;
+  parent;
+  registry;
+  #values = /* @__PURE__ */ new Map();
+  #pending = /* @__PURE__ */ new Map();
+  #destroyHooks = [];
+  #resolving = [];
+  #ctx;
+  #disposed = false;
+  #isolated = false;
+  constructor(registry, scope, parent, options2 = {}) {
+    this.registry = registry;
+    this.scope = scope;
+    this.parent = parent;
+    this.#isolated = options2.isolated ?? false;
+  }
+  /** True when missing lifetimes throw rather than resolving into an outer scope. */
+  get isolated() {
+    return this.#isolated;
+  }
+  /** The proxy handed to handlers, middlewares and factories as `ctx`. */
+  get ctx() {
+    this.#ctx ??= createCtxProxy(this);
+    return this.#ctx;
+  }
+  createChild(scope, options2 = {}) {
+    return new _Container(this.registry, scope, this, options2);
+  }
+  /** Walks up to the container that owns the given lifetime. */
+  containerFor(lifetime) {
+    let node = this;
+    while (SCOPE_DEPTH[node.scope] > SCOPE_DEPTH[lifetime] && node.parent) {
+      node = node.parent;
+    }
+    return node;
+  }
+  /**
+   * Looks up a key across the scope chain.
+   *
+   * Returns the cached value when it is already resolved, a promise when a
+   * factory has to run, or `undefined` when nothing provides the key.
+   */
+  get(key) {
+    for (let node = this; node; node = node.parent) {
+      if (node.#values.has(key)) return node.#values.get(key);
+    }
+    const provider = this.registry.get(key);
+    if (!provider) return void 0;
+    return this.#ownerFor(provider).#resolve(provider);
+  }
+  /**
+   * The container a provider belongs in, refusing to fall back to an outer
+   * scope when this one is isolated.
+   */
+  #ownerFor(provider) {
+    const owner = this.containerFor(provider.lifetime);
+    if (this.#isolated && owner.scope !== provider.lifetime) {
+      throw new ScopeUnavailableError(provider.key, provider.lifetime, this.scope);
+    }
+    return owner;
+  }
+  /**
+   * Assigns a value, e.g. `ctx.user = ...` from a middleware.
+   *
+   * The target scope comes from the provider declaration when one exists;
+   * undeclared keys land in the current scope.
+   */
+  set(key, value) {
+    const provider = this.registry.get(key);
+    const owner = provider ? this.#ownerFor(provider) : this;
+    owner.#values.set(key, value);
+    owner.#pending.delete(key);
+  }
+  has(key) {
+    for (let node = this; node; node = node.parent) {
+      if (node.#values.has(key)) return true;
+    }
+    return this.registry.has(key);
+  }
+  /** True when the key already has a value and access will not return a promise. */
+  isResolved(key) {
+    for (let node = this; node; node = node.parent) {
+      if (node.#values.has(key)) return true;
+    }
+    return false;
+  }
+  /** Resolves a provider inside this container, memoizing the result. */
+  #resolve(provider) {
+    if (this.#values.has(provider.key)) return this.#values.get(provider.key);
+    const pending = this.#pending.get(provider.key);
+    if (pending) return pending;
+    if (!provider.isFactory) {
+      this.#values.set(provider.key, provider.value);
+      return provider.value;
+    }
+    if (this.#resolving.includes(provider.key)) {
+      throw new CircularDependencyError([...this.#resolving, provider.key]);
+    }
+    const hooks = {
+      onDestroy: (fn) => this.#destroyHooks.push(fn)
+    };
+    this.#resolving.push(provider.key);
+    let result;
+    try {
+      result = provider.factory(this.ctx, hooks);
+    } finally {
+      this.#resolving.pop();
+    }
+    if (isPromiseLike(result)) {
+      const promise = Promise.resolve(result).then(
+        (value) => {
+          this.#values.set(provider.key, value);
+          this.#pending.delete(provider.key);
+          return value;
+        },
+        (err) => {
+          this.#pending.delete(provider.key);
+          throw err;
+        }
+      );
+      this.#pending.set(provider.key, promise);
+      return promise;
+    }
+    this.#values.set(provider.key, result);
+    return result;
+  }
+  /** Resolves a provider and awaits it. Used at boot and by `ensure()`. */
+  async resolveAsync(key) {
+    return await this.get(key);
+  }
+  /**
+   * Forces the given keys (default: everything owned by this scope) to resolve
+   * so later synchronous `ctx.x` access never yields a promise.
+   */
+  async ensure(keys) {
+    const targets = keys ?? this.registry.byLifetime(this.scope).map((p) => p.key);
+    for (const key of targets) {
+      await this.resolveAsync(key);
+    }
+  }
+  registerDestroyHook(fn) {
+    this.#destroyHooks.push(fn);
+  }
+  get disposed() {
+    return this.#disposed;
+  }
+  /**
+   * Runs this scope's `onDestroy` hooks in reverse registration order, so
+   * dependents tear down before their dependencies.
+   */
+  async dispose() {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    await Promise.allSettled([...this.#pending.values()]);
+    const hooks = this.#destroyHooks.splice(0).reverse();
+    const errors = [];
+    for (const hook of hooks) {
+      try {
+        await hook();
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+    this.#values.clear();
+    this.#pending.clear();
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Errors thrown while disposing scope");
+    }
+  }
+};
+function isPromiseLike(value) {
+  return typeof value === "object" && value !== null && typeof value.then === "function";
+}
+function createCtxProxy(container) {
+  return new Proxy(/* @__PURE__ */ Object.create(null), {
+    get(_target, prop) {
+      if (typeof prop === "symbol") return void 0;
+      return container.get(prop);
+    },
+    set(_target, prop, value) {
+      if (typeof prop === "symbol") return false;
+      container.set(prop, value);
+      return true;
+    },
+    has(_target, prop) {
+      if (typeof prop === "symbol") return false;
+      return container.has(prop);
+    },
+    deleteProperty() {
+      return false;
+    },
+    ownKeys() {
+      return container.registry.keys();
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      if (typeof prop === "symbol") return void 0;
+      if (!container.has(prop)) return void 0;
+      return { enumerable: true, configurable: true, value: container.get(prop) };
+    }
+  });
+}
+
 // src/bootstrap.ts
 var import_node_http = require("http");
+
+// src/bus/types.ts
+var RETRY = /* @__PURE__ */ Symbol.for("clovejs.retry");
+
+// src/bus/definitions.ts
+var REJECT = /* @__PURE__ */ Symbol.for("clovejs.reject");
+var RejectSignal = class extends Error {
+  reason;
+  [REJECT] = true;
+  constructor(reason) {
+    super(reason);
+    this.name = "RejectSignal";
+    this.reason = reason;
+  }
+};
+function isReject(value) {
+  return value instanceof RejectSignal || typeof value === "object" && value !== null && value[REJECT] === true;
+}
+
+// src/bus/schema.ts
+var MessageValidationError = class extends Error {
+  issues;
+  constructor(issues) {
+    super(`Payload failed validation: ${issues.join("; ")}`);
+    this.name = "MessageValidationError";
+    this.issues = issues;
+  }
+};
+function compileValidator(input, file) {
+  if (input === null || input === void 0) return null;
+  if (typeof input !== "object" && typeof input !== "function") {
+    throw new CloveBootError(
+      `\`input\` must be a schema or an object of schemas, but it is ${typeof input}.`,
+      [file]
+    );
+  }
+  const standard = input["~standard"];
+  if (standard && typeof standard.validate === "function") {
+    return async (payload) => {
+      const result = await standard.validate(payload);
+      return unwrapStandard(result);
+    };
+  }
+  if (typeof input.parse === "function") {
+    return (payload) => input.parse(payload);
+  }
+  const entries = Object.entries(input);
+  if (entries.length === 0) return null;
+  for (const [key, value] of entries) {
+    if (!value || typeof value.parse !== "function") {
+      throw new CloveBootError(
+        `\`input.${key}\` is not a schema. Every field of a bare input object must be one, for example \`{ ${key}: z.string() }\`. Pass a whole schema (\`z.object({...})\`) if you meant to validate the payload as a unit.`,
+        [file]
+      );
+    }
+  }
+  const shape = entries;
+  return (payload) => {
+    if (typeof payload !== "object" || payload === null) {
+      throw new MessageValidationError([
+        `expected an object payload, received ${payload === null ? "null" : typeof payload}`
+      ]);
+    }
+    const source = payload;
+    const out = {};
+    for (const [key, schema] of shape) {
+      try {
+        out[key] = schema.parse(source[key]);
+      } catch (err) {
+        throw new MessageValidationError([`${key}: ${messageOf(err)}`]);
+      }
+    }
+    return out;
+  };
+}
+function unwrapStandard(result) {
+  if (result.issues === void 0) return result.value;
+  throw new MessageValidationError(
+    result.issues.map((issue) => describeIssue(issue))
+  );
+}
+function describeIssue(issue) {
+  const path = (issue.path ?? []).map(
+    (segment) => typeof segment === "object" && segment !== null && "key" in segment ? String(segment.key) : String(segment)
+  ).join(".");
+  return path ? `${path}: ${issue.message}` : issue.message;
+}
+function asValidationError(err) {
+  if (err instanceof MessageValidationError) return err;
+  return new MessageValidationError([messageOf(err)]);
+}
+function messageOf(err) {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+// src/bus/retry.ts
+var DEFAULT_FACTOR = 2;
+var DEFAULT_MAX_DELAY = 3e4;
+function computeDelay(attempt, policy) {
+  const backoff = policy?.backoff;
+  if (!backoff || backoff.base <= 0) return 0;
+  const factor = backoff.factor ?? DEFAULT_FACTOR;
+  const max = backoff.max ?? DEFAULT_MAX_DELAY;
+  const raw = backoff.base * Math.pow(factor, Math.max(0, attempt - 1));
+  const capped = Math.min(raw, max);
+  if (backoff.jitter === false) return Math.round(capped);
+  return Math.round(capped / 2 + Math.random() * (capped / 2));
+}
+function validateRetryPolicy(policy, file) {
+  if (policy === null) return null;
+  const fail = (message) => {
+    throw new CloveBootError(message, [file]);
+  };
+  if (!Number.isInteger(policy.attempts) || policy.attempts < 1) {
+    fail(
+      `\`retry({ attempts })\` must be an integer of at least 1, but it is ${String(policy.attempts)}. Use 1 to disable retrying.`
+    );
+  }
+  const backoff = policy.backoff;
+  if (backoff) {
+    if (!Number.isFinite(backoff.base) || backoff.base < 0) {
+      fail("`retry({ backoff: { base } })` must be a non-negative number of milliseconds.");
+    }
+    if (backoff.factor !== void 0 && (!Number.isFinite(backoff.factor) || backoff.factor < 1)) {
+      fail("`retry({ backoff: { factor } })` must be at least 1.");
+    }
+    if (backoff.max !== void 0 && (!Number.isFinite(backoff.max) || backoff.max < 0)) {
+      fail("`retry({ backoff: { max } })` must be a non-negative number of milliseconds.");
+    }
+  }
+  return policy;
+}
+
+// src/bus/runtime.ts
+var BUS_PROVIDER_PREFIX = "bus:";
+function busProviderKey(name) {
+  return BUS_PROVIDER_PREFIX + name;
+}
+var WILDCARD = /[*#>]/;
+var DEFAULT_DRAIN_TIMEOUT = 3e4;
+var BusRuntime = class {
+  #options;
+  #instances = /* @__PURE__ */ new Map();
+  #subscriptions = [];
+  #inflight = /* @__PURE__ */ new Set();
+  #eagerKeys = [];
+  #started = false;
+  #closed = false;
+  constructor(options2) {
+    this.#options = options2;
+  }
+  get empty() {
+    return this.#options.scan.buses.length === 0;
+  }
+  get names() {
+    return this.#options.scan.buses.map((b) => b.name);
+  }
+  get counts() {
+    return {
+      buses: this.#options.scan.buses.length,
+      consumers: this.#options.scan.consumers.length
+    };
+  }
+  get started() {
+    return this.#started;
+  }
+  /**
+   * Resolves every bus and checks it against the consumers bound to it.
+   *
+   * Runs after `root.ensure()` and before anything subscribes, so a project
+   * asking for a guarantee its broker cannot provide fails at boot, naming both
+   * files, rather than at 3am on a poison message.
+   */
+  async init() {
+    const { scan, root, registry, logger } = this.#options;
+    this.#eagerKeys = registry.eagerKeys("request");
+    for (const entry of scan.buses) {
+      const instance = await root.resolveAsync(entry.key);
+      assertBusShape(instance, entry);
+      this.#instances.set(entry.name, instance);
+    }
+    for (const consumer of scan.consumers) {
+      const bus = this.#instances.get(consumer.bus);
+      if (!bus) continue;
+      const caps = bus.capabilities;
+      const busFile = scan.buses.find((b) => b.name === consumer.bus).file;
+      const attempts = consumer.retry?.attempts ?? 1;
+      if (attempts > 1 && !caps.redelivery) {
+        throw new CloveBootError(
+          `Consumer "${consumer.name}" declares retry({ attempts: ${attempts} }), but bus "${consumer.bus}" advertises redelivery: false \u2014 an un-acked message never comes back, so retrying cannot happen. Drop the retry() call, or bind this consumer to a bus that redelivers.`,
+          [consumer.file, busFile]
+        );
+      }
+      if (attempts > 1 && !caps.attempts) {
+        throw new CloveBootError(
+          `Consumer "${consumer.name}" declares retry({ attempts: ${attempts} }), but bus "${consumer.bus}" advertises attempts: false \u2014 it cannot report an accurate delivery count, so the cap would never fire and a failing message would redeliver forever. Carry the counter with stampAttempt()/readAttempt() in the adapter, or drop the retry() call.`,
+          [consumer.file, busFile]
+        );
+      }
+      if ((consumer.retry?.backoff?.base ?? 0) > 0 && !caps.delayedRetry) {
+        throw new CloveBootError(
+          `Consumer "${consumer.name}" declares a retry backoff, but bus "${consumer.bus}" advertises delayedRetry: false \u2014 the delay would be silently dropped and redeliveries would spin at broker speed. Drop the backoff, or give the adapter a delay mechanism.`,
+          [consumer.file, busFile]
+        );
+      }
+      if (WILDCARD.test(consumer.channel) && !caps.patterns) {
+        throw new CloveBootError(
+          `Consumer "${consumer.name}" subscribes to the pattern "${consumer.channel}", but bus "${consumer.bus}" advertises patterns: false. Subscribe to a concrete channel instead.`,
+          [consumer.file, busFile]
+        );
+      }
+    }
+    for (const entry of scan.buses) {
+      if (!this.#instances.get(entry.name).capabilities.confirms) {
+        logger.warn(
+          `Bus "${entry.name}" advertises confirms: false \u2014 \`ctx.bus.${entry.name}.publish()\` resolves before the broker has accepted the message, so a publish can be silently lost.`
+        );
+      }
+    }
+  }
+  /** The resolved bus by name. Throws when the project defines no such file. */
+  bus(name) {
+    const instance = this.#instances.get(name);
+    if (!instance) {
+      const known = this.names;
+      throw new Error(
+        `No bus named "${name}". ` + (known.length ? `This project defines: ${known.join(", ")}.` : "This project defines no bus/ files.")
+      );
+    }
+    return instance;
+  }
+  /** The narrow publish-only facade exposed as `ctx.bus.<name>`. */
+  publisher(name) {
+    return {
+      publish: (channel, payload, options2) => this.bus(name).publish(channel, payload, options2)
+    };
+  }
+  /** Messages published through an in-memory bus. For assertions in tests. */
+  published(name) {
+    const instance = this.bus(name);
+    if (!Array.isArray(instance.published)) {
+      throw new Error(
+        `Bus "${name}" does not record published messages. This is available on memoryBus(); a real broker adapter cannot provide it.`
+      );
+    }
+    return instance.published;
+  }
+  /** Subscribes every consumer. Idempotent. */
+  async start() {
+    if (this.#started || this.#closed) return;
+    this.#started = true;
+    for (const consumer of this.#options.scan.consumers) {
+      const bus = this.bus(consumer.bus);
+      const subscription = await bus.subscribe(
+        {
+          channel: consumer.channel,
+          subscription: consumer.subscription,
+          maxInFlight: consumer.maxInFlight
+        },
+        (message) => this.#track(this.#deliver(consumer, message))
+      );
+      this.#subscriptions.push(subscription);
+    }
+  }
+  /**
+   * Runs one message through the full delivery path with no broker involved:
+   * scope creation, eager values, validation, handler, outcome.
+   */
+  async dispatch(input) {
+    const consumer = this.#resolveTarget(input);
+    return await this.#deliver(consumer, {
+      channel: input.channel,
+      subscription: consumer.subscription,
+      payload: input.payload,
+      attempt: input.attempt ?? 1,
+      headers: Object.freeze({ ...input.headers }),
+      ...input.id ? { id: input.id } : {},
+      ...input.key ? { key: input.key } : {},
+      timestamp: /* @__PURE__ */ new Date()
+    });
+  }
+  /** Waits for queued and in-flight deliveries to settle. */
+  async drain(timeout = this.#options.drainTimeout ?? DEFAULT_DRAIN_TIMEOUT) {
+    const deadline = Date.now() + timeout;
+    const queued = [...this.#instances.values()].filter(isDrainable).map((instance) => instance.drain());
+    if (queued.length > 0) {
+      await Promise.race([Promise.allSettled(queued), sleep(timeout)]);
+    }
+    while (this.#inflight.size > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await Promise.race([Promise.allSettled([...this.#inflight]), sleep(remaining)]);
+    }
+    return this.#inflight.size;
+  }
+  /**
+   * Stops subscriptions, then drains what is already running.
+   *
+   * Deliveries still in flight when the timeout expires are abandoned un-acked,
+   * so an at-least-once broker redelivers them. Each is logged rather than
+   * quietly acked, because acking work that did not finish is data loss.
+   */
+  async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    await Promise.all(
+      this.#subscriptions.map(
+        (subscription) => subscription.close().catch(
+          (err) => this.#options.logger.error("Error closing bus subscription:", err)
+        )
+      )
+    );
+    this.#subscriptions = [];
+    const abandoned = await this.drain();
+    if (abandoned > 0) {
+      this.#options.logger.warn(
+        `Shutdown timed out with ${abandoned} delivery/deliveries still running. They were not acknowledged and will be redelivered.`
+      );
+    }
+  }
+  /**
+   * Registers a delivery so `drain()` can wait for it.
+   *
+   * The bookkeeping handler is attached *before* anything `drain()` adds, so by
+   * the time an `allSettled` over the set resolves, the settled entries have
+   * already been removed — otherwise the drain loop could spin on a set that
+   * still looks full. The adapter gets the original promise back untouched.
+   */
+  #track(work) {
+    const tracked = work.then(
+      () => void this.#inflight.delete(tracked),
+      () => void this.#inflight.delete(tracked)
+    );
+    this.#inflight.add(tracked);
+    return work;
+  }
+  async #deliver(consumer, envelope) {
+    const attempt = normalizeAttempt(envelope.attempt);
+    const container = this.#options.root.createChild("request", { isolated: true });
+    try {
+      if (this.#eagerKeys.length > 0) await container.ensure(this.#eagerKeys);
+      let payload = envelope.payload;
+      if (consumer.input) {
+        try {
+          payload = await consumer.input(payload);
+        } catch (err) {
+          const failure = asValidationError(err);
+          this.#log(consumer, attempt, "reject", failure, true);
+          return { action: "reject", reason: failure.message, attempt, error: failure };
+        }
+      }
+      const message = { ...envelope, attempt, payload };
+      await consumer.handler(payload, container.ctx, message);
+      return { action: "ack" };
+    } catch (err) {
+      if (isReject(err)) {
+        this.#log(consumer, attempt, "reject", err, true);
+        return { action: "reject", reason: err.reason, attempt, error: err };
+      }
+      return this.#failure(consumer, attempt, err);
+    } finally {
+      await container.dispose().catch(
+        (err) => this.#options.logger.error(
+          `Error disposing delivery scope for "${consumer.name}":`,
+          err
+        )
+      );
+    }
+  }
+  #failure(consumer, attempt, err) {
+    const attempts = consumer.retry?.attempts ?? 1;
+    const reason = messageOf2(err);
+    if (attempts <= 1 || !this.bus(consumer.bus).capabilities.redelivery) {
+      this.#log(consumer, attempt, "reject", err);
+      return { action: "reject", reason, attempt, error: err };
+    }
+    if (attempt >= attempts) {
+      this.#log(consumer, attempt, "reject", err);
+      return {
+        action: "reject",
+        reason: `Retries exhausted after ${attempts} attempt(s): ${reason}`,
+        attempt,
+        error: err
+      };
+    }
+    this.#log(consumer, attempt, "retry", err);
+    return {
+      action: "retry",
+      attempt: attempt + 1,
+      delay: computeDelay(attempt, consumer.retry),
+      error: err
+    };
+  }
+  /**
+   * `expected` separates control flow from crashes: a `reject()` or a payload
+   * that failed validation is a decision the code made on purpose, and printing
+   * its stack buries the genuine failures. Anything unexpected keeps the stack.
+   */
+  #log(consumer, attempt, action, err, expected = false) {
+    const prefix = `[bus:${consumer.bus}] ${consumer.name} (${consumer.channel} \u2192 ${consumer.subscription}) attempt ${attempt} ${action === "retry" ? "retried" : "rejected"}:`;
+    if (action === "retry") this.#options.logger.warn(prefix, messageOf2(err));
+    else if (expected) this.#options.logger.warn(prefix, messageOf2(err));
+    else this.#options.logger.error(prefix, err);
+  }
+  #resolveTarget(input) {
+    const candidates2 = this.#options.scan.consumers.filter(
+      (consumer) => (input.bus === void 0 || consumer.bus === input.bus) && (input.subscription === void 0 || consumer.subscription === input.subscription) && channelMatches(consumer.channel, input.channel)
+    );
+    if (candidates2.length === 1) return candidates2[0];
+    const target = [
+      input.bus ? `bus "${input.bus}"` : null,
+      `channel "${input.channel}"`,
+      input.subscription ? `subscription "${input.subscription}"` : null
+    ].filter(Boolean).join(", ");
+    if (candidates2.length === 0) {
+      throw new Error(`No consumer matches ${target}.`);
+    }
+    throw new Error(
+      `${candidates2.length} consumers match ${target}: ${candidates2.map((c) => c.name).join(", ")}. Pass \`bus\` and \`subscription\` to pick one.`
+    );
+  }
+};
+function assertBusShape(value, entry) {
+  const fail = (detail) => {
+    throw new CloveBootError(
+      `bus/${entry.name} must resolve to a MessageBus, but ${detail}. It needs \`capabilities\`, \`publish(channel, payload, options)\` and \`subscribe(spec, deliver)\`.`,
+      [entry.file]
+    );
+  };
+  if (typeof value !== "object" || value === null) {
+    fail(`it is ${value === null ? "null" : typeof value}`);
+  }
+  const candidate = value;
+  if (typeof candidate.publish !== "function") fail("it has no publish() method");
+  if (typeof candidate.subscribe !== "function") fail("it has no subscribe() method");
+  const caps = candidate.capabilities;
+  if (typeof caps !== "object" || caps === null) fail("it declares no capabilities");
+  for (const flag of [
+    "redelivery",
+    "attempts",
+    "delayedRetry",
+    "patterns",
+    "confirms"
+  ]) {
+    if (typeof caps[flag] !== "boolean") {
+      fail(`capabilities.${flag} is ${typeof caps[flag]}, not a boolean`);
+    }
+  }
+}
+function isDrainable(value) {
+  return typeof value.drain === "function";
+}
+function channelMatches(selector, channel) {
+  if (selector === channel) return true;
+  if (!WILDCARD.test(selector)) return false;
+  return matchSegments(selector.split("."), channel.split("."));
+}
+function matchSegments(pattern, value) {
+  if (pattern.length === 0) return value.length === 0;
+  const [head2, ...rest] = pattern;
+  if (head2 === "#" || head2 === ">") {
+    for (let i = 0; i <= value.length; i++) {
+      if (matchSegments(rest, value.slice(i))) return true;
+    }
+    return false;
+  }
+  if (value.length === 0) return false;
+  if (head2 !== "*" && head2 !== value[0]) return false;
+  return matchSegments(rest, value.slice(1));
+}
+function normalizeAttempt(attempt) {
+  return Number.isInteger(attempt) && attempt >= 1 ? attempt : 1;
+}
+function messageOf2(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+function sleep(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
 
 // src/cache/runtime.ts
 var import_node_crypto = require("crypto");
@@ -685,206 +1399,6 @@ function cloneEntry(entry) {
     freshUntil: entry.freshUntil,
     staleUntil: entry.staleUntil
   };
-}
-
-// src/container/container.ts
-var SCOPE_DEPTH = {
-  singleton: 0,
-  session: 1,
-  request: 2
-};
-var CircularDependencyError = class extends Error {
-  constructor(chain) {
-    super(`Circular dependency detected: ${chain.join(" -> ")}`);
-    this.name = "CircularDependencyError";
-  }
-};
-var Container = class _Container {
-  scope;
-  parent;
-  registry;
-  #values = /* @__PURE__ */ new Map();
-  #pending = /* @__PURE__ */ new Map();
-  #destroyHooks = [];
-  #resolving = [];
-  #ctx;
-  #disposed = false;
-  constructor(registry, scope, parent) {
-    this.registry = registry;
-    this.scope = scope;
-    this.parent = parent;
-  }
-  /** The proxy handed to handlers, middlewares and factories as `ctx`. */
-  get ctx() {
-    this.#ctx ??= createCtxProxy(this);
-    return this.#ctx;
-  }
-  createChild(scope) {
-    return new _Container(this.registry, scope, this);
-  }
-  /** Walks up to the container that owns the given lifetime. */
-  containerFor(lifetime) {
-    let node = this;
-    while (SCOPE_DEPTH[node.scope] > SCOPE_DEPTH[lifetime] && node.parent) {
-      node = node.parent;
-    }
-    return node;
-  }
-  /**
-   * Looks up a key across the scope chain.
-   *
-   * Returns the cached value when it is already resolved, a promise when a
-   * factory has to run, or `undefined` when nothing provides the key.
-   */
-  get(key) {
-    for (let node = this; node; node = node.parent) {
-      if (node.#values.has(key)) return node.#values.get(key);
-    }
-    const provider = this.registry.get(key);
-    if (!provider) return void 0;
-    const owner = this.containerFor(provider.lifetime);
-    return owner.#resolve(provider);
-  }
-  /**
-   * Assigns a value, e.g. `ctx.user = ...` from a middleware.
-   *
-   * The target scope comes from the provider declaration when one exists;
-   * undeclared keys land in the current scope.
-   */
-  set(key, value) {
-    const provider = this.registry.get(key);
-    const owner = provider ? this.containerFor(provider.lifetime) : this;
-    owner.#values.set(key, value);
-    owner.#pending.delete(key);
-  }
-  has(key) {
-    for (let node = this; node; node = node.parent) {
-      if (node.#values.has(key)) return true;
-    }
-    return this.registry.has(key);
-  }
-  /** True when the key already has a value and access will not return a promise. */
-  isResolved(key) {
-    for (let node = this; node; node = node.parent) {
-      if (node.#values.has(key)) return true;
-    }
-    return false;
-  }
-  /** Resolves a provider inside this container, memoizing the result. */
-  #resolve(provider) {
-    if (this.#values.has(provider.key)) return this.#values.get(provider.key);
-    const pending = this.#pending.get(provider.key);
-    if (pending) return pending;
-    if (!provider.isFactory) {
-      this.#values.set(provider.key, provider.value);
-      return provider.value;
-    }
-    if (this.#resolving.includes(provider.key)) {
-      throw new CircularDependencyError([...this.#resolving, provider.key]);
-    }
-    const hooks = {
-      onDestroy: (fn) => this.#destroyHooks.push(fn)
-    };
-    this.#resolving.push(provider.key);
-    let result;
-    try {
-      result = provider.factory(this.ctx, hooks);
-    } finally {
-      this.#resolving.pop();
-    }
-    if (isPromiseLike(result)) {
-      const promise = Promise.resolve(result).then(
-        (value) => {
-          this.#values.set(provider.key, value);
-          this.#pending.delete(provider.key);
-          return value;
-        },
-        (err) => {
-          this.#pending.delete(provider.key);
-          throw err;
-        }
-      );
-      this.#pending.set(provider.key, promise);
-      return promise;
-    }
-    this.#values.set(provider.key, result);
-    return result;
-  }
-  /** Resolves a provider and awaits it. Used at boot and by `ensure()`. */
-  async resolveAsync(key) {
-    return await this.get(key);
-  }
-  /**
-   * Forces the given keys (default: everything owned by this scope) to resolve
-   * so later synchronous `ctx.x` access never yields a promise.
-   */
-  async ensure(keys) {
-    const targets = keys ?? this.registry.byLifetime(this.scope).map((p) => p.key);
-    for (const key of targets) {
-      await this.resolveAsync(key);
-    }
-  }
-  registerDestroyHook(fn) {
-    this.#destroyHooks.push(fn);
-  }
-  get disposed() {
-    return this.#disposed;
-  }
-  /**
-   * Runs this scope's `onDestroy` hooks in reverse registration order, so
-   * dependents tear down before their dependencies.
-   */
-  async dispose() {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    await Promise.allSettled([...this.#pending.values()]);
-    const hooks = this.#destroyHooks.splice(0).reverse();
-    const errors = [];
-    for (const hook of hooks) {
-      try {
-        await hook();
-      } catch (err) {
-        errors.push(err);
-      }
-    }
-    this.#values.clear();
-    this.#pending.clear();
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) {
-      throw new AggregateError(errors, "Errors thrown while disposing scope");
-    }
-  }
-};
-function isPromiseLike(value) {
-  return typeof value === "object" && value !== null && typeof value.then === "function";
-}
-function createCtxProxy(container) {
-  return new Proxy(/* @__PURE__ */ Object.create(null), {
-    get(_target, prop) {
-      if (typeof prop === "symbol") return void 0;
-      return container.get(prop);
-    },
-    set(_target, prop, value) {
-      if (typeof prop === "symbol") return false;
-      container.set(prop, value);
-      return true;
-    },
-    has(_target, prop) {
-      if (typeof prop === "symbol") return false;
-      return container.has(prop);
-    },
-    deleteProperty() {
-      return false;
-    },
-    ownKeys() {
-      return container.registry.keys();
-    },
-    getOwnPropertyDescriptor(_target, prop) {
-      if (typeof prop === "symbol") return void 0;
-      if (!container.has(prop)) return void 0;
-      return { enumerable: true, configurable: true, value: container.get(prop) };
-    }
-  });
 }
 
 // src/container/logger.ts
@@ -2244,6 +2758,10 @@ var Registry = class {
   byLifetime(lifetime) {
     return this.all().filter((p) => p.lifetime === lifetime);
   }
+  /** Keys to force-resolve whenever a scope of this lifetime is created. */
+  eagerKeys(lifetime) {
+    return this.byLifetime(lifetime).filter((p) => p.eager === true).map((p) => p.key);
+  }
 };
 
 // src/mcp/schema.ts
@@ -2586,7 +3104,9 @@ var DEFAULT_DIRS = {
   di: "di",
   services: "services",
   middlewares: "middlewares",
-  mcp: "mcp"
+  mcp: "mcp",
+  bus: "bus",
+  consumers: "consumers"
 };
 var MCP_KINDS = {
   tools: "mcpTool",
@@ -2638,12 +3158,19 @@ async function scanProject(options2) {
             [file.absolute]
           );
         }
+        if (d.eager && !d.isFactory) {
+          throw new CloveBootError(
+            "`eager: true` only makes sense with a factory: a plain value has nothing to run. Drop it, or pass a function as `value`.",
+            [file.absolute]
+          );
+        }
         registry.add({
           key,
           kind: "di",
           lifetime: d.lifetime,
           file: file.absolute,
           isFactory: d.isFactory,
+          ...d.eager ? { eager: true } : {},
           ...d.isFactory ? { factory: d.value } : { value: d.value }
         });
       }
@@ -2770,6 +3297,93 @@ async function scanProject(options2) {
     });
   }
   middlewares.sort(comparePriority);
+  const buses = [];
+  const busNames = /* @__PURE__ */ new Map();
+  for (const file of await walkDir((0, import_node_path3.join)(sourceDir, dirs.bus))) {
+    files.push(file.absolute);
+    const def = await loadDefault(loader, file.absolute);
+    if (definitionKind(def) !== "bus") {
+      throw new CloveBootError(
+        `Files in ${dirs.bus}/ must default-export bus(...), but this one exports ${describe(definitionKind(def))}.`,
+        [file.absolute]
+      );
+    }
+    const name = deriveContextKey(file.relative);
+    if (name === "publish") {
+      throw new CloveBootError(
+        `A bus cannot be named "publish": it would shadow \`ctx.bus.publish\`. Rename the file.`,
+        [file.absolute]
+      );
+    }
+    claim(busNames, name, file.absolute, `bus name "${name}"`);
+    const d = def;
+    registry.add({
+      key: busProviderKey(name),
+      kind: "builtin",
+      lifetime: "singleton",
+      file: file.absolute,
+      isFactory: d.isFactory,
+      ...d.isFactory ? { factory: d.bus } : { value: d.bus }
+    });
+    buses.push({ name, key: busProviderKey(name), file: file.absolute });
+  }
+  const consumers = [];
+  const consumerKeys = /* @__PURE__ */ new Map();
+  for (const file of await walkDir((0, import_node_path3.join)(sourceDir, dirs.consumers))) {
+    files.push(file.absolute);
+    const def = await loadDefault(loader, file.absolute);
+    if (definitionKind(def) !== "consumer") {
+      throw new CloveBootError(
+        `Files in ${dirs.consumers}/ must default-export consume(...), but this one exports ${describe(definitionKind(def))}.`,
+        [file.absolute]
+      );
+    }
+    const d = def;
+    for (const field of ["bus", "channel", "subscription"]) {
+      if (typeof d[field] !== "string" || d[field].length === 0) {
+        throw new CloveBootError(
+          `consume({ ${field} }) is required and must be a non-empty string.`,
+          [file.absolute]
+        );
+      }
+    }
+    if (d.maxInFlight !== null && (!Number.isInteger(d.maxInFlight) || d.maxInFlight < 1)) {
+      throw new CloveBootError(
+        "`maxInFlight` must be an integer of at least 1. It defaults to 1, because any higher value forfeits per-key ordering.",
+        [file.absolute]
+      );
+    }
+    if (!busNames.has(d.bus)) {
+      throw new CloveBootError(
+        `Unknown bus "${d.bus}". ` + (buses.length ? `This project defines: ${buses.map((b) => b.name).join(", ")}.` : `This project has no ${dirs.bus}/ directory \u2014 add ${dirs.bus}/${d.bus}.ts default-exporting bus(...).`),
+        [file.absolute]
+      );
+    }
+    const name = stripExtension(file.relative);
+    claim(
+      consumerKeys,
+      `${d.bus}\0${d.channel}\0${d.subscription}`,
+      file.absolute,
+      `consumer for channel "${d.channel}" with subscription "${d.subscription}" on bus "${d.bus}"`
+    );
+    consumers.push({
+      name,
+      bus: d.bus,
+      channel: d.channel,
+      subscription: d.subscription,
+      maxInFlight: d.maxInFlight ?? 1,
+      input: compileValidator(d.input, file.absolute),
+      handler: d.handler,
+      retry: validateRetryPolicy(d[RETRY], file.absolute),
+      file: file.absolute
+    });
+  }
+  if (consumers.length > 0 && buses.length === 0) {
+    throw new CloveBootError(
+      `${dirs.consumers}/ has ${consumers.length} consumer(s) but the project defines no bus. Add ${dirs.bus}/<name>.ts default-exporting bus(...) \u2014 there is deliberately no implicit in-memory fallback, because that failure mode is a production incident where events vanish silently.`,
+      consumers.map((c) => c.file)
+    );
+  }
   let views2 = null;
   for (const ext of ["ts", "js", "mjs", "cjs"]) {
     const viewsFile = (0, import_node_path3.join)(sourceDir, `views.${ext}`);
@@ -2785,7 +3399,17 @@ async function scanProject(options2) {
     views2 = def.engine;
     break;
   }
-  return { routes, middlewares, sockets, socketHandlers, mcp, registry, views: views2, files };
+  return {
+    routes,
+    middlewares,
+    sockets,
+    socketHandlers,
+    mcp,
+    bus: { buses, consumers },
+    registry,
+    views: views2,
+    files
+  };
 }
 async function loadRoutes(loader, dir, label, mount, routes, files) {
   for (const file of await walkDir(dir)) {
@@ -3167,10 +3791,12 @@ var CloveApp = class {
   mcp;
   sessions;
   cache;
+  bus;
   scan;
   #options;
+  #eagerRequestKeys;
   #closed = false;
-  constructor(scan, root, logger, sessions, ws2, mcp, cache, options2) {
+  constructor(scan, root, logger, sessions, ws2, mcp, cache, bus, options2) {
     this.scan = scan;
     this.registry = scan.registry;
     this.routes = scan.routes;
@@ -3180,7 +3806,9 @@ var CloveApp = class {
     this.ws = ws2;
     this.mcp = mcp;
     this.cache = cache;
+    this.bus = bus;
     this.#options = options2;
+    this.#eagerRequestKeys = scan.registry.eagerKeys("request");
   }
   /**
    * Handles one request. Returns false when no route matched, so an Express
@@ -3222,6 +3850,9 @@ var CloveApp = class {
         return acquired.container;
       })() : this.root;
       requestContainer = parent.createChild("request");
+      if (this.#eagerRequestKeys.length > 0) {
+        await requestContainer.ensure(this.#eagerRequestKeys);
+      }
       await req.readBody();
       completion = await runPipeline(match.route, req, res, requestContainer, {
         middlewares: this.scan.middlewares,
@@ -3303,10 +3934,11 @@ var CloveApp = class {
   handleUpgrade(req, socket, head2) {
     this.ws.handleUpgrade(req, socket, head2);
   }
-  /** Disposes sockets, sessions and the singleton scope, in that order. */
+  /** Disposes deliveries, sockets, sessions and the singleton scope, in that order. */
   async close() {
     if (this.#closed) return;
     this.#closed = true;
+    await this.bus.close().catch((err) => this.logger.error("bus close:", err));
     await this.mcp.close().catch((err) => this.logger.error("mcp close:", err));
     await this.ws.close().catch((err) => this.logger.error("ws close:", err));
     await this.sessions.disposeAll().catch((err) => this.logger.error("session cleanup:", err));
@@ -3371,6 +4003,29 @@ async function createApp(options2 = {}) {
       return new CacheRuntime(store, logger);
     }
   });
+  if (scan.registry.has("bus")) {
+    throw new CloveBootError(
+      '`ctx.bus` is reserved by CloveJS. Rename the service or DI value that provides "bus".',
+      [scan.registry.get("bus").file]
+    );
+  }
+  scan.registry.add({
+    key: "bus",
+    kind: "builtin",
+    lifetime: "singleton",
+    file: "<builtin>",
+    isFactory: true,
+    factory: async (ctx) => {
+      const publishers = {};
+      for (const entry of scan.bus.buses) {
+        const instance = await ctx[entry.key];
+        publishers[entry.name] = {
+          publish: (channel, payload, publishOptions) => instance.publish(channel, payload, publishOptions)
+        };
+      }
+      return Object.freeze(publishers);
+    }
+  });
   if (options2.overrides) {
     for (const [key, value] of Object.entries(options2.overrides)) {
       const existing = scan.registry.get(key);
@@ -3416,7 +4071,16 @@ async function createApp(options2 = {}) {
     ...scan.mcp.auth ? { auth: scan.mcp.auth } : {},
     exposeErrors: options2.exposeErrors ?? isDev
   });
-  return new CloveApp(scan, root, logger, sessions, ws2, mcp, cache, {
+  const bus = new BusRuntime({
+    scan: scan.bus,
+    root,
+    registry: scan.registry,
+    logger,
+    ...options2.busDrainTimeout !== void 0 ? { drainTimeout: options2.busDrainTimeout } : {}
+  });
+  await bus.init();
+  if ((options2.bus ?? "auto") === "auto") await bus.start();
+  return new CloveApp(scan, root, logger, sessions, ws2, mcp, cache, bus, {
     bodyLimit: options2.bodyLimit ?? DEFAULT_BODY_LIMIT,
     exposeErrors: options2.exposeErrors ?? isDev
   });
@@ -3447,8 +4111,9 @@ async function bootstrap(options2 = {}) {
   const routeCount = app.routes.list().length;
   const socketCount = app.scan.socketHandlers.size;
   const { tools } = app.mcp.counts;
+  const { buses, consumers } = app.bus.counts;
   app.logger.info(
-    `CloveJS listening on ${url} \u2014 ${routeCount} route${routeCount === 1 ? "" : "s"}` + (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "") + (app.mcp.empty ? "" : `, MCP on ${app.mcp.path} with ${tools} tool${tools === 1 ? "" : "s"}`)
+    `CloveJS listening on ${url} \u2014 ${routeCount} route${routeCount === 1 ? "" : "s"}` + (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "") + (buses ? `, ${consumers} consumer${consumers === 1 ? "" : "s"} on ${buses} bus${buses === 1 ? "" : "es"}` : "") + (app.mcp.empty ? "" : `, MCP on ${app.mcp.path} with ${tools} tool${tools === 1 ? "" : "s"}`)
   );
   let closing;
   const close = async () => {
@@ -3490,6 +4155,7 @@ async function engine(host, options2 = {}) {
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  CircularDependencyError,
   CloveApp,
   CloveBootError,
   CloveRequest,
@@ -3497,6 +4163,7 @@ async function engine(host, options2 = {}) {
   HttpError,
   MemoryCacheStore,
   MemorySessionStore,
+  ScopeUnavailableError,
   all,
   bootstrap,
   createApp,

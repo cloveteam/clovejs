@@ -1,14 +1,18 @@
 import {
+  CircularDependencyError,
   CloveApp,
   CloveRequest,
   CloveResponse,
   MemoryCacheStore,
   MemorySessionStore,
+  ScopeUnavailableError,
   createApp,
   createLogger,
   loadEnv,
   parseEnv
-} from "./chunk-BBRJXFJG.js";
+} from "./chunk-2FAKPXXQ.js";
+import "./chunk-TRZMDT5R.js";
+import "./chunk-D37VDJ5M.js";
 import {
   CACHE,
   CloveBootError,
@@ -20,7 +24,7 @@ import {
   error,
   isHttpError,
   isViewResult
-} from "./chunk-HUBFYLOZ.js";
+} from "./chunk-EXK66K2C.js";
 
 // src/http/sse.ts
 var SSE_HEADERS = {
@@ -216,7 +220,8 @@ function di(spec) {
     [KIND]: "di",
     lifetime: spec.lifetime,
     value: spec.value,
-    isFactory: typeof spec.value === "function"
+    isFactory: typeof spec.value === "function",
+    eager: spec.eager ?? false
   };
 }
 function ws(handler) {
@@ -260,8 +265,9 @@ async function bootstrap(options2 = {}) {
   const routeCount = app.routes.list().length;
   const socketCount = app.scan.socketHandlers.size;
   const { tools } = app.mcp.counts;
+  const { buses, consumers } = app.bus.counts;
   app.logger.info(
-    `CloveJS listening on ${url} \u2014 ${routeCount} route${routeCount === 1 ? "" : "s"}` + (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "") + (app.mcp.empty ? "" : `, MCP on ${app.mcp.path} with ${tools} tool${tools === 1 ? "" : "s"}`)
+    `CloveJS listening on ${url} \u2014 ${routeCount} route${routeCount === 1 ? "" : "s"}` + (socketCount ? `, ${socketCount} socket${socketCount === 1 ? "" : "s"}` : "") + (buses ? `, ${consumers} consumer${consumers === 1 ? "" : "s"} on ${buses} bus${buses === 1 ? "" : "es"}` : "") + (app.mcp.empty ? "" : `, MCP on ${app.mcp.path} with ${tools} tool${tools === 1 ? "" : "s"}`)
   );
   let closing;
   const close = async () => {
@@ -302,6 +308,7 @@ async function engine(host, options2 = {}) {
   });
 }
 export {
+  CircularDependencyError,
   CloveApp,
   CloveBootError,
   CloveRequest,
@@ -309,6 +316,7 @@ export {
   HttpError,
   MemoryCacheStore,
   MemorySessionStore,
+  ScopeUnavailableError,
   all,
   bootstrap,
   createApp,

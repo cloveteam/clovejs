@@ -5,6 +5,7 @@ export default defineConfig([
     entry: {
       index: "src/index.ts",
       mcp: "src/mcp/index.ts",
+      bus: "src/bus/index.ts",
       testing: "src/testing/index.ts",
     },
     format: ["esm", "cjs"],

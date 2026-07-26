@@ -15,6 +15,40 @@ export class CircularDependencyError extends Error {
 }
 
 /**
+ * Raised when an isolated scope is asked for a lifetime it has no parent for.
+ *
+ * Without isolation the lookup would silently walk past the missing scope and
+ * resolve into the singleton root, where the value would then be cached for the
+ * lifetime of the process — a session-scoped value leaking from one unit of
+ * work into every later one.
+ */
+export class ScopeUnavailableError extends Error {
+  readonly key: string
+  readonly lifetime: Lifetime
+
+  constructor(key: string, lifetime: Lifetime, scope: Lifetime) {
+    super(
+      `Cannot resolve "${key}": it is declared with lifetime "${lifetime}", but ` +
+        `this ${scope} scope has no ${lifetime} parent. Values of this lifetime ` +
+        `are only available where a ${lifetime} scope exists — an HTTP request, ` +
+        `not a message delivery or a socket connection.`,
+    )
+    this.name = "ScopeUnavailableError"
+    this.key = key
+    this.lifetime = lifetime
+  }
+}
+
+export interface ChildScopeOptions {
+  /**
+   * Refuse to resolve lifetimes that are missing from this chain, instead of
+   * falling back to the nearest outer scope. Used for message deliveries and
+   * socket connections, which are request-shaped but have no session.
+   */
+  isolated?: boolean
+}
+
+/**
  * One lifetime scope's worth of resolved dependencies.
  *
  * Containers form a chain — request -> session -> singleton — and a provider is
@@ -32,11 +66,23 @@ export class Container {
   #resolving: string[] = []
   #ctx?: RuntimeCtx
   #disposed = false
+  #isolated = false
 
-  constructor(registry: Registry, scope: Lifetime, parent?: Container) {
+  constructor(
+    registry: Registry,
+    scope: Lifetime,
+    parent?: Container,
+    options: ChildScopeOptions = {},
+  ) {
     this.registry = registry
     this.scope = scope
     this.parent = parent
+    this.#isolated = options.isolated ?? false
+  }
+
+  /** True when missing lifetimes throw rather than resolving into an outer scope. */
+  get isolated(): boolean {
+    return this.#isolated
   }
 
   /** The proxy handed to handlers, middlewares and factories as `ctx`. */
@@ -45,8 +91,8 @@ export class Container {
     return this.#ctx
   }
 
-  createChild(scope: Lifetime): Container {
-    return new Container(this.registry, scope, this)
+  createChild(scope: Lifetime, options: ChildScopeOptions = {}): Container {
+    return new Container(this.registry, scope, this, options)
   }
 
   /** Walks up to the container that owns the given lifetime. */
@@ -73,8 +119,19 @@ export class Container {
     const provider = this.registry.get(key)
     if (!provider) return undefined
 
+    return this.#ownerFor(provider).#resolve(provider)
+  }
+
+  /**
+   * The container a provider belongs in, refusing to fall back to an outer
+   * scope when this one is isolated.
+   */
+  #ownerFor(provider: Provider): Container {
     const owner = this.containerFor(provider.lifetime)
-    return owner.#resolve(provider)
+    if (this.#isolated && owner.scope !== provider.lifetime) {
+      throw new ScopeUnavailableError(provider.key, provider.lifetime, this.scope)
+    }
+    return owner
   }
 
   /**
@@ -85,7 +142,7 @@ export class Container {
    */
   set(key: string, value: unknown): void {
     const provider = this.registry.get(key)
-    const owner = provider ? this.containerFor(provider.lifetime) : this
+    const owner = provider ? this.#ownerFor(provider) : this
     owner.#values.set(key, value)
     owner.#pending.delete(key)
   }

@@ -1,0 +1,17 @@
+{
+  "name": "clovejs-example-pubsub",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A runnable CloveJS message-bus app: two buses with different guarantees, several consumers on one channel, wildcard selectors, retry with backoff, and capability checks at boot.",
+  "type": "module",
+  "scripts": {
+    "dev": "clove dev",
+    "build": "clove build",
+    "start": "node dist/main.js",
+    "routes": "clove routes"
+  },
+  "dependencies": {
+    "clovejs": "file:../..",
+    "zod": "^3.25.76"
+  }
+}

@@ -27,13 +27,14 @@ and injectables, fully typed, with zero manual registration.
 ---
 
 - 🗂️ **Nothing to wire up.** Next.js/Nuxt-inspired file-based routing — drop a file in a directory and it is live.
-- 🔤 **TypeScript from the box.** Fully typed, automatically — no manual annotations, ever.
-- 🧩 **DI in the box.** Singleton, session and request lifetime scopes.
-- 🔌 **WebSockets included.** Same conventions, `[param]` segments and all.
-- 📡 **Server-Sent Events, first-class.** Stream events with `sse()` — framing, heartbeats and reconnect handled.
-- 🧠 **MCP servers too.** Drop a file in `mcp/tools/` and your app is a Model Context Protocol server.
+- 🔤 **TypeScript.** Fully typed, automatically — no manual annotations, ever.
+- 🧩 **DI.** Out of the box.
+- 🔌 **WebSockets.** Same conventions, `[param]` segments and all.
+- 📡 **Server-Sent Events.** Stream events with `sse()` — framing, heartbeats and reconnect handled.
+- 📬 **Message brokers** (e.g. RabbitMQ, Kafka or Redis) are seamlessly integrated too. No runtime dependency.
+- 🧠 **MCP.** Drop a file in `mcp/tools/` and your app is a Model Context Protocol server.
 - 🤝 **Adopts incrementally.** Mount Clove in an app you already have and migrate routes over at your own pace.
-- 🧪 **Testable in memory.** `clovejs/testing` boots your app with no port and lets you swap any dependency for a fake.
+- 🧪 **Testable.** `clovejs/testing` boots your app with no port and lets you swap any dependency for a fake.
 - 🤖 **Agent-ready.** `npx clove skills` teaches your AI editor the conventions.
 
 ```bash
@@ -76,6 +77,8 @@ directories at the root. Both are detected automatically.
 src/
   api/          route handlers      -> HTTP endpoints
   ws/           socket handlers     -> WebSocket endpoints
+  bus/          broker connections  -> ctx.bus.<filename>
+  consumers/    message handlers    -> subscriptions
   mcp/          tools, resources    -> MCP server
   di/           injectable values
   services/     injectable services

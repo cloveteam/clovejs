@@ -88,7 +88,11 @@ methods.
 ## `di(spec)`
 
 ```ts
-di<T>(spec: { lifetime: Lifetime; value: T | ValueFactory<T> }): DiDefinition<T>
+di<T>(spec: {
+  lifetime: Lifetime
+  value: T | ValueFactory<T>
+  eager?: boolean
+}): DiDefinition<T>
 ```
 
 An injected value, exposed as `ctx.<filename>`.
@@ -97,6 +101,13 @@ An injected value, exposed as `ctx.<filename>`.
 | --- | --- | --- |
 | `lifetime` | `"singleton" \| "session" \| "request"` | [Scope](/guide/dependency-injection#the-three-lifetimes) |
 | `value` | `T` or `(ctx, hooks) => T` | A plain value, or a factory |
+| `eager` | `boolean` | Resolve when the scope opens, not on first access |
+
+Resolution is lazy by default, so a factory nothing reads never runs. `eager`
+turns a `request`-lifetime value into a per-request and
+[per-delivery hook](/guide/message-bus#per-delivery-hooks): start the span in
+the factory, close it in `onDestroy`. It requires a factory — `eager` on a plain
+value is a boot error.
 
 A `value` that is a function is treated as a **factory**. To inject a function
 as a value, return it from a factory: `value: () => myFn`.
@@ -159,6 +170,74 @@ JSON, so a handler stays a pure function of its inputs.
 ```ts
 export default get(async (req) => view("notes/detail", { id: req.params.id }))
 ```
+
+## `bus(source)`
+
+```ts
+bus(source: MessageBus | BusFactory): BusDefinition
+```
+
+From `clovejs/bus`. One broker connection, exposed as `ctx.bus.<filename>`. The
+source is either a `MessageBus` object or a `(ctx, hooks)` factory, branching on
+`typeof` exactly like `di()`. See [Message bus](/guide/message-bus).
+
+## `consume(spec)`
+
+```ts
+// With validation: the payload type is inferred from `input`.
+consume<S extends MessageSchema>(spec: {
+  bus: BusName
+  channel: string
+  subscription: string
+  input: S
+  maxInFlight?: number
+  handler: (payload: InferPayload<S>, ctx, message) => unknown
+}): ConsumerDefinition
+
+// Without it: name the payload type.
+consume<Payload = unknown>(spec: {
+  bus: BusName
+  channel: string
+  subscription: string
+  maxInFlight?: number
+  handler: (payload: Payload, ctx, message) => unknown
+}): ConsumerDefinition
+```
+
+From `clovejs/bus`. One subscription. Unlike routes, nothing is derived from the
+file path — see
+[why](/guide/message-bus#nothing-is-derived-from-the-file-path).
+
+| Field | Meaning |
+| --- | --- |
+| `bus` | Which `bus/` file to bind to. Checked against the generated `BusRegistry` |
+| `channel` | What to subscribe to. May be a wildcard when the bus advertises `patterns` |
+| `subscription` | The durable subscriber identity — a queue, a consumer group |
+| `input` | Optional payload schema. Omit it and use `consume<Payload>({...})` |
+| `maxInFlight` | Concurrent deliveries. Defaults to 1; raising it forfeits ordering |
+
+Two overloads rather than one, so pass **either** `input` **or** a type
+argument. Supplying both is a type error: the explicit type argument selects the
+second overload, which does not accept `input`. See
+[Validation](/guide/message-bus#validation).
+
+### `.retry(policy)`
+
+```ts
+.retry({ attempts: number, backoff?: { base, factor?, max?, jitter? } })
+```
+
+Chainable, like `.meta()`. Capped at `attempts` total deliveries. Boot-checked
+against the bus's `attempts`, `redelivery` and `delayedRetry` capabilities.
+
+## `reject(reason)`
+
+```ts
+reject(reason: string): RejectSignal
+```
+
+From `clovejs/bus`. Thrown from a consumer to end a delivery without retrying,
+in the style of `error()`.
 
 ## `tool(spec)`
 
@@ -236,3 +315,14 @@ checks a shared symbol brand, so it works across copies.
 | `MemorySessionStore` | The default in-process [session store](/guide/sessions#custom-stores) |
 | `createLogger` | Builds the console logger used by default |
 | `CloveService<T>`, `CloveDi<T>` | Type helpers used by the [generated declarations](/guide/typed-context) |
+| `ScopeUnavailableError` | Thrown when an isolated scope is asked for a lifetime it lacks |
+
+### From `clovejs/bus`
+
+| Export | What it is |
+| --- | --- |
+| `bus`, `consume`, `reject` | The definitions above |
+| `memoryBus()` | In-process bus for dev, tests and single-process deployments |
+| `readAttempt`, `stampAttempt`, `ATTEMPT_HEADER` | Carry the delivery counter across a retry hop |
+| `matchChannel(selector, channel)` | The wildcard matcher, for adapters that need one |
+| `MessageValidationError` | Raised when a payload fails `input` |
