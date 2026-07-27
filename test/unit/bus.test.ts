@@ -2,14 +2,25 @@ import { describe, expect, it } from "vitest"
 import {
   ATTEMPT_HEADER,
   computeDelay,
+  literal,
+  looksLikePattern,
   matchChannel,
   memoryBus,
-  readAttempt,
+  pattern,
+  readFailures,
   reject,
   isReject,
-  stampAttempt,
+  resolveChannel,
+  stampFailures,
+  stripReserved,
 } from "../../src/bus/index.js"
-import { compileValidator, MessageValidationError } from "../../src/bus/schema.js"
+// Not part of the public surface: it has one caller, `BusRuntime.publisher`.
+import { reservedHeadersIn } from "../../src/bus/attempts.js"
+import {
+  asValidationError,
+  compileValidator,
+  MessageValidationError,
+} from "../../src/bus/schema.js"
 import { validateRetryPolicy } from "../../src/bus/retry.js"
 import { CloveBootError } from "../../src/errors.js"
 
@@ -42,30 +53,69 @@ describe("matchChannel", () => {
   })
 })
 
-describe("attempt headers", () => {
-  it("reads 1 when the header is absent", () => {
-    expect(readAttempt(undefined)).toBe(1)
-    expect(readAttempt({})).toBe(1)
+describe("channel selectors", () => {
+  it("treats a plain string as a literal channel", () => {
+    expect(resolveChannel("orders.created", "f.ts")).toEqual({
+      channel: "orders.created",
+      pattern: false,
+    })
   })
 
-  it("round-trips through stampAttempt", () => {
-    const stamped = stampAttempt({ trace: "abc" }, 4)
-    expect(stamped[ATTEMPT_HEADER]).toBe("4")
+  it("refuses to guess when a bare string carries wildcard punctuation", () => {
+    // Sniffing is wrong in both directions, so it is asked for by name instead.
+    expect(() => resolveChannel("orders.#", "f.ts")).toThrow(CloveBootError)
+    expect(() => resolveChannel("user.#1", "f.ts")).toThrow(/pattern\("user\.#1"\)/)
+  })
+
+  it("takes pattern() and literal() at their word", () => {
+    expect(resolveChannel(pattern("orders.#"), "f.ts")).toEqual({
+      channel: "orders.#",
+      pattern: true,
+    })
+    expect(resolveChannel(literal("user.#1"), "f.ts")).toEqual({
+      channel: "user.#1",
+      pattern: false,
+    })
+  })
+
+  it("still reports what looks like a pattern, for boot diagnostics", () => {
+    expect(looksLikePattern("orders.#")).toBe(true)
+    expect(looksLikePattern("orders.created")).toBe(false)
+  })
+})
+
+describe("attempt headers", () => {
+  it("reads 0 failures when the header is absent", () => {
+    expect(readFailures(undefined)).toBe(0)
+    expect(readFailures({})).toBe(0)
+  })
+
+  it("round-trips through stampFailures", () => {
+    const stamped = stampFailures({ trace: "abc" }, 2)
+    // The wire value stays the 1-based attempt number: 2 failures is attempt 3.
+    expect(stamped[ATTEMPT_HEADER]).toBe("3")
     expect(stamped.trace).toBe("abc")
-    expect(readAttempt(stamped)).toBe(4)
+    expect(readFailures(stamped)).toBe(2)
   })
 
   it("treats a corrupt counter as a first delivery rather than no cap", () => {
-    expect(readAttempt({ [ATTEMPT_HEADER]: "banana" })).toBe(1)
-    expect(readAttempt({ [ATTEMPT_HEADER]: "0" })).toBe(1)
-    expect(readAttempt({ [ATTEMPT_HEADER]: "-3" })).toBe(1)
-    expect(readAttempt({ [ATTEMPT_HEADER]: "2.5" })).toBe(1)
+    expect(readFailures({ [ATTEMPT_HEADER]: "banana" })).toBe(0)
+    expect(readFailures({ [ATTEMPT_HEADER]: "0" })).toBe(0)
+    expect(readFailures({ [ATTEMPT_HEADER]: "-3" })).toBe(0)
+    expect(readFailures({ [ATTEMPT_HEADER]: "2.5" })).toBe(0)
   })
 
   it("does not mutate the headers it was given", () => {
     const original = { trace: "abc" }
-    stampAttempt(original, 2)
+    stampFailures(original, 1)
     expect(original).toEqual({ trace: "abc" })
+  })
+
+  it("keeps the framework namespace out of what a handler sees", () => {
+    const headers = { trace: "abc", [ATTEMPT_HEADER]: "4", "x-clove-other": "1" }
+    expect(stripReserved(headers)).toEqual({ trace: "abc" })
+    expect(reservedHeadersIn(headers)).toEqual([ATTEMPT_HEADER, "x-clove-other"])
+    expect(reservedHeadersIn({ trace: "abc" })).toEqual([])
   })
 })
 
@@ -126,7 +176,17 @@ describe("compileValidator", () => {
 
   it("returns null when no input is declared", () => {
     expect(compileValidator(null, "f.ts")).toBeNull()
-    expect(compileValidator({}, "f.ts")).toBeNull()
+  })
+
+  it("rejects an object that is not a schema at all", () => {
+    // A map of schemas is no longer a form of its own: name the fields in the
+    // schema instead, which is what `z.object({...})` already does.
+    expect(() => compileValidator({} as never, "f.ts")).toThrow(
+      /not a recognised schema/,
+    )
+    expect(() => compileValidator({ id: "nope" } as never, "f.ts")).toThrow(
+      /not a recognised schema/,
+    )
   })
 
   it("uses .parse on a whole schema, including a non-object payload", () => {
@@ -136,25 +196,6 @@ describe("compileValidator", () => {
     )!
     expect(validate(["a"])).toEqual(["a"])
     expect(() => validate("nope")).toThrow(/expected an array/)
-  })
-
-  it("validates a bare shape field by field", async () => {
-    const validate = compileValidator(
-      { id: fake((v) => typeof v === "string", "a string") },
-      "f.ts",
-    )!
-    expect(await validate({ id: "x", extra: 1 })).toEqual({ id: "x" })
-    await expect(async () => validate({ id: 2 })).rejects.toThrow(
-      MessageValidationError,
-    )
-  })
-
-  it("rejects a non-object payload against a bare shape", () => {
-    const validate = compileValidator(
-      { id: fake(() => true, "anything") },
-      "f.ts",
-    )!
-    expect(() => validate("scalar")).toThrow(/expected an object payload/)
   })
 
   it("supports Standard Schema validators", async () => {
@@ -172,10 +213,10 @@ describe("compileValidator", () => {
     await expect(validate("x")).rejects.toThrow(/total: not a number/)
   })
 
-  it("names the offending field when a bare shape holds a non-schema", () => {
-    expect(() =>
-      compileValidator({ id: "not a schema" } as never, "f.ts"),
-    ).toThrow(/`input.id` is not a schema/)
+  it("raises a validation error the runtime can tell from a handler crash", () => {
+    const err = asValidationError(new Error("orderId must be a string"))
+    expect(err).toBeInstanceOf(MessageValidationError)
+    expect(err.issues).toEqual(["orderId must be a string"])
   })
 })
 
@@ -190,25 +231,32 @@ describe("reject()", () => {
 })
 
 describe("memoryBus", () => {
-  it("advertises the whole contract, so dev matches production", () => {
+  const noHooks = { report: () => {} }
+
+  it("advertises the whole contract by default", () => {
     expect(memoryBus().capabilities).toEqual({
-      redelivery: true,
-      attempts: true,
-      delayedRetry: true,
+      retries: "delayed",
       patterns: true,
-      confirms: true,
     })
+  })
+
+  it("can be downgraded to mirror the broker a project deploys against", () => {
+    // The default is the most capable bus there is, which makes it the weakest
+    // possible check: no capability mismatch can surface against it.
+    const instance = memoryBus({ capabilities: { retries: "immediate" } })
+    expect(instance.capabilities).toEqual({ retries: "immediate", patterns: true })
   })
 
   it("records publishes and fans out to matching subscriptions only", async () => {
     const instance = memoryBus()
     const seen: string[] = []
     await instance.subscribe(
-      { channel: "orders.*", subscription: "s1", maxInFlight: 1 },
+      { channel: "orders.*", pattern: true, subscription: "s1", maxInFlight: 1 },
       async (message) => {
         seen.push(message.channel)
         return { action: "ack" }
       },
+      noHooks,
     )
 
     await instance.publish("orders.created", { id: 1 })
@@ -219,46 +267,111 @@ describe("memoryBus", () => {
     expect(instance.published).toHaveLength(2)
   })
 
-  it("redelivers with the attempt the outcome asked for, and dead-letters rejects", async () => {
+  it("treats a non-pattern selector literally, even with wildcard characters", async () => {
     const instance = memoryBus()
-    const attempts: number[] = []
+    const seen: string[] = []
     await instance.subscribe(
-      { channel: "c", subscription: "s", maxInFlight: 1 },
+      { channel: "user.#1", pattern: false, subscription: "s", maxInFlight: 1 },
       async (message) => {
-        attempts.push(message.attempt)
-        return message.attempt < 3
-          ? { action: "retry", attempt: message.attempt + 1, delay: 0, error: null }
-          : { action: "reject", reason: "gave up", attempt: message.attempt }
+        seen.push(message.channel)
+        return { action: "ack" }
       },
+      noHooks,
+    )
+
+    await instance.publish("user.everything", { id: 1 })
+    await instance.publish("user.#1", { id: 2 })
+    await instance.drain()
+
+    expect(seen).toEqual(["user.#1"])
+  })
+
+  it("redelivers to the one subscription that asked, carrying its counter", async () => {
+    const instance = memoryBus()
+    const failures: number[] = []
+    await instance.subscribe(
+      { channel: "c", pattern: false, subscription: "s", maxInFlight: 1 },
+      async (message) => {
+        failures.push(message.failures ?? 0)
+        const next = (message.failures ?? 0) + 1
+        return next < 3
+          ? {
+              action: "retry",
+              subscription: "s",
+              delay: 0,
+              headers: stampFailures(message.headers, next),
+              failures: next,
+              error: null,
+            }
+          : { action: "reject", reason: "gave up", failures: next }
+      },
+      noHooks,
     )
 
     await instance.publish("c", { id: 1 })
     await instance.drain()
 
-    expect(attempts).toEqual([1, 2, 3])
+    expect(failures).toEqual([0, 1, 2])
     expect(instance.dead).toEqual([
-      expect.objectContaining({ channel: "c", reason: "gave up", attempt: 3 }),
+      expect.objectContaining({ channel: "c", reason: "gave up", failures: 3 }),
     ])
   })
 
-  it("isolates the payload, as a serialization boundary would", async () => {
+  it("does not disturb a sibling subscription when one retries", async () => {
     const instance = memoryBus()
-    const payload = { nested: { count: 1 } }
-    let received: { nested: { count: number } } | undefined
+    let retried = false
+    const sibling: unknown[] = []
 
     await instance.subscribe(
-      { channel: "c", subscription: "s", maxInFlight: 1 },
+      { channel: "c", pattern: false, subscription: "failing", maxInFlight: 1 },
       async (message) => {
-        received = message.payload as typeof payload
-        received.nested.count = 99
+        if (retried) return { action: "ack" }
+        retried = true
+        return {
+          action: "retry",
+          subscription: "failing",
+          delay: 0,
+          headers: stampFailures(message.headers, 1),
+          failures: 1,
+          error: null,
+        }
+      },
+      noHooks,
+    )
+    await instance.subscribe(
+      { channel: "c", pattern: false, subscription: "sibling", maxInFlight: 1 },
+      async (message) => {
+        sibling.push(message.payload ?? message.body)
         return { action: "ack" }
       },
+      noHooks,
     )
 
-    await instance.publish("c", payload)
+    await instance.publish("c", { id: 1 })
     await instance.drain()
 
-    expect(received!.nested.count).toBe(99)
-    expect(payload.nested.count).toBe(1)
+    // A retry is a redelivery to one subscriber, never a re-publish.
+    expect(sibling).toHaveLength(1)
+  })
+
+  it("delivers bytes, so an uncarryable payload fails here rather than in production", async () => {
+    const instance = memoryBus()
+    let received: unknown
+    await instance.subscribe(
+      { channel: "c", pattern: false, subscription: "s", maxInFlight: 1 },
+      async (message) => {
+        received = message.body
+        return { action: "ack" }
+      },
+      noHooks,
+    )
+
+    await instance.publish("c", { nested: { count: 1 } })
+    await instance.drain()
+
+    expect(received).toBeInstanceOf(Uint8Array)
+    expect(JSON.parse(new TextDecoder().decode(received as Uint8Array))).toEqual({
+      nested: { count: 1 },
+    })
   })
 })

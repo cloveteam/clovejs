@@ -75,6 +75,7 @@ export type {
   SseEvent,
   SseHandlerFn,
   SseOptions,
+  Trigger,
   ValueFactory,
   ViewEngine,
   ViewResult,

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { Container, CircularDependencyError } from "../../src/container/container.js"
+import {
+  Container,
+  CircularDependencyError,
+  ScopeUnavailableError,
+} from "../../src/container/container.js"
 import { Registry, type Provider } from "../../src/container/registry.js"
 import { CloveBootError } from "../../src/errors.js"
 import type { Lifetime, RuntimeCtx, LifecycleHooks } from "../../src/types.js"
@@ -240,5 +244,66 @@ describe("Lifecycle", () => {
     const root = setup([])
     await root.dispose()
     await expect(root.dispose()).resolves.toBeUndefined()
+  })
+})
+
+describe("isolated request scopes", () => {
+  it("resolves request-lifetime values in the isolated scope itself", () => {
+    const root = setup([value("perUnit", "request", { id: 1 })])
+    const delivery = root.createChild("request", { isolated: true })
+
+    // The value resolves *here* rather than being cached in the root for every
+    // later delivery.
+    expect(delivery.get("perUnit")).toEqual({ id: 1 })
+    expect(delivery.owns("request")).toBe(true)
+    expect(delivery.containerFor("request")).toBe(delivery)
+  })
+
+  it("gives each delivery its own copy of a request-lifetime factory", () => {
+    let made = 0
+    const root = setup([factory("scoped", "request", () => ++made)])
+
+    expect(root.createChild("request", { isolated: true }).get("scoped")).toBe(1)
+    expect(root.createChild("request", { isolated: true }).get("scoped")).toBe(2)
+  })
+
+  it("refuses a session-lifetime value rather than pinning it to the root", () => {
+    const root = setup([value("visitor", "session", { visits: 0 })])
+    const delivery = root.createChild("request", { isolated: true })
+
+    expect(() => delivery.get("visitor")).toThrow(ScopeUnavailableError)
+    expect(() => delivery.get("visitor")).toThrow(/no session parent/)
+  })
+
+  it("reports only eager keys of the scope's own lifetime", () => {
+    const registry = new Registry()
+    registry.add({ ...factory("hook", "request", () => 1), eager: true })
+    registry.add(factory("lazy", "request", () => 3))
+
+    expect(registry.eagerKeys("request")).toEqual(["hook"])
+    expect(registry.eagerKeys("singleton")).toEqual([])
+  })
+})
+
+describe("triggers", () => {
+  it("hands a factory the trigger of the scope chain it resolves in", () => {
+    const seen: unknown[] = []
+    const root = setup([
+      factory("who", "request", (_ctx, { trigger }) => {
+        seen.push(trigger)
+        return trigger?.kind ?? "none"
+      }),
+    ])
+    const request = root.createChild("request", {
+      trigger: { kind: "mcp", method: "tools/call" },
+    })
+
+    expect(request.get("who")).toBe("mcp")
+    expect(seen).toEqual([{ kind: "mcp", method: "tools/call" }])
+  })
+
+  it("leaves the trigger undefined for factories outside a unit of work", () => {
+    const root = setup([factory("who", "singleton", (_ctx, { trigger }) => trigger)])
+    expect(root.get("who")).toBeUndefined()
   })
 })

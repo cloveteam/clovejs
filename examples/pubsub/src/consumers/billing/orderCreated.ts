@@ -28,7 +28,12 @@ export default consume<OrderCreated>({
     await ctx.bus.events.publish("invoice.created", invoice, { key: invoice.orderId })
   },
 })
-  // The bus advertises `attempts: true` and `delayedRetry: true`, so both of
-  // these are honored. Against a bus that advertises either as false, this line
-  // is a boot error naming both files — see src/bus/presence.ts.
+  // The bus advertises `retries: "delayed"`, so both the redelivery and the
+  // backoff are honored. Against a bus advertising anything less, this line is a
+  // boot error naming both files — see bus/presence.ts.
+  //
+  // `attempts` caps *handler failures*, which is the only number core can see.
+  // A delivery lost to a crash or to an expired drain timeout never ran the
+  // handler to a verdict, so it never spent an attempt — bounding those is the
+  // broker's job, via a redrive policy or a max-delivery setting on the queue.
   .retry({ attempts: 4, backoff: { base: 250, factor: 2, max: 5_000 } })

@@ -184,7 +184,7 @@ eager `di` values, validation, handler, outcome — and hands back the
 `DeliveryOutcome` to assert on:
 
 ```ts
-const app = await createTestApp({ bus: "manual" })
+const app = await createTestApp({ startConsumers: false })
 
 const outcome = await app.bus.dispatch({
   bus: "events",
@@ -198,10 +198,10 @@ expect(outcome).toEqual({ action: "ack" })
 `bus` and `subscription` are optional when the channel is unambiguous; with two
 consumers on one channel, omitting them is an error naming both.
 
-Pass `attempt` to test a redelivery — including the moment retries run out:
+Pass `failures` to test a redelivery — including the moment retries run out:
 
 ```ts
-const last = await app.bus.dispatch({ …, attempt: 5 })
+const last = await app.bus.dispatch({ …, failures: 4 })
 expect(last).toMatchObject({ action: "reject" })
 expect(last.reason).toMatch(/Retries exhausted/)
 ```
@@ -223,7 +223,7 @@ expect(app.bus.published("events")).toContainEqual(
 `published(bus)` reads the record kept by `memoryBus()`; a real broker adapter
 cannot provide it, and asking says so.
 
-Without `{ bus: "manual" }` consumers subscribe during boot, which is what an
+Without `{ startConsumers: false }` consumers subscribe during boot, which is what an
 end-to-end test wants — publish from an HTTP route and `drain()`.
 
 ## Unit level

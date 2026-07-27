@@ -25,12 +25,9 @@ cd examples/pubsub
 npm run dev
 ```
 
-The banner lists the consumers alongside the routes, and warns about
-`bus/presence.ts` — see [Capabilities](#capabilities-are-checked-at-boot) below:
+The banner lists the consumers alongside the routes:
 
 ```
-WARN  Bus "presence" advertises confirms: false — `ctx.bus.presence.publish()`
-      resolves before the broker has accepted the message …
 INFO  CloveJS dev server ready on http://localhost:3000
 INFO    POST    /api/orders
 INFO    BUS     orders.#        →  events/analytics
@@ -46,11 +43,12 @@ INFO    BUS     user.*          →  presence/live
 | [`src/bus/events.ts`](./src/bus/events.ts) | The whole bus in one line, via `memoryBus()` |
 | [`src/lib/fanoutBus.ts`](./src/lib/fanoutBus.ts) | **Writing an adapter**: capabilities, `publish`, the `subscribe` driver loop |
 | [`src/bus/presence.ts`](./src/bus/presence.ts) | A second connection, with weaker guarantees |
-| [`src/consumers/billing/orderCreated.ts`](./src/consumers/billing/orderCreated.ts) | `retry()` with backoff, and `reject()` for failures a retry cannot fix |
+| [`src/consumers/billing/orderCreated.ts`](./src/consumers/billing/orderCreated.ts) | `retry()` with backoff, both delivery caps, and `reject()` for failures a retry cannot fix |
 | [`src/consumers/email/orderCreated.ts`](./src/consumers/email/orderCreated.ts) | The **same channel**, different subscription, with zod validation |
-| [`src/consumers/analytics/orders.ts`](./src/consumers/analytics/orders.ts) | A wildcard selector, and `maxInFlight` |
+| [`src/consumers/analytics/orders.ts`](./src/consumers/analytics/orders.ts) | `pattern()` for a wildcard selector, and `maxInFlight` |
 | [`src/consumers/presence/userActive.ts`](./src/consumers/presence/userActive.ts) | A consumer that *cannot* declare `retry()`, and why |
-| [`src/di/deliveryLog.ts`](./src/di/deliveryLog.ts) | `di({ eager: true })` — the per-delivery hook |
+| [`src/di/deliveryLog.ts`](./src/di/deliveryLog.ts) | `di({ eager: true })` plus a `trigger` guard — the per-delivery hook |
+| [`src/services/deliveries.ts`](./src/services/deliveries.ts) | Where the per-delivery hook puts state a route can read |
 | [`src/api/orders.post.ts`](./src/api/orders.post.ts) | Publishing from an HTTP route |
 
 ## Try it
@@ -97,7 +95,7 @@ ERROR … email   … attempt 1 rejected: MessageValidationError: Payload failed
 Analytics still counts it — a rejection is per subscription, not per message.
 
 **Watch the wildcard.** `consumers/analytics/orders.ts` subscribes to
-`orders.#`, so a channel it has never heard of arrives anyway:
+`pattern("orders.#")`, so a channel it has never heard of arrives anyway:
 
 ```bash
 curl -X POST localhost:3000/api/orders/cancel -H 'content-type: application/json' \
@@ -113,13 +111,13 @@ curl -X POST localhost:3000/api/presence -H 'content-type: application/json' \
 
 ## Capabilities are checked at boot
 
-`src/bus/presence.ts` advertises `redelivery: false` — it fans a message out to
+`src/bus/presence.ts` advertises `retries: "none"` — it fans a message out to
 whoever is listening and forgets it. Add a `.retry(...)` to
 `src/consumers/presence/userActive.ts` and the app refuses to start:
 
 ```
 Consumer "presence/userActive" declares retry({ attempts: 3 }), but bus
-"presence" advertises redelivery: false — an un-acked message never comes back,
+"presence" advertises retries: "none" — an un-acked message never comes back,
 so retrying cannot happen. Drop the retry() call, or bind this consumer to a
 bus that redelivers.
   - src/consumers/presence/userActive.ts
@@ -130,9 +128,8 @@ That is the point of declaring capabilities. Retrying on a transport that never
 redelivers is not a slower success — it is a promise nothing can keep, so it
 fails at boot naming both files rather than looking like it works.
 
-The same check catches a backoff a bus would silently drop, a wildcard on a bus
-without pattern support, and a retry cap on a bus that cannot count deliveries
-(which would redeliver forever).
+The same check catches a backoff a bus would silently drop and a wildcard on a
+bus without pattern support.
 
 ## Going to a real broker
 
@@ -149,5 +146,6 @@ export default bus(async (ctx, { onDestroy }) => {
 No consumer changes, because no consumer has ever seen a native message.
 `src/lib/fanoutBus.ts` is the shape you are filling in — the
 [guide](https://cloveteam.github.io/clovejs/guide/message-bus) has a complete
-RabbitMQ adapter, including how `readAttempt`/`stampAttempt` carry the delivery
-counter across a retry hop.
+RabbitMQ adapter, including how `readFailures` and `outcome.headers` carry the
+failure counter across a retry hop, and why the retry redelivers to one queue
+instead of publishing back to the exchange.

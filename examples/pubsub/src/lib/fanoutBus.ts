@@ -1,8 +1,10 @@
-import type {
-  BusSubscription,
-  MessageBus,
-  MessageEnvelope,
-  SubscriptionSpec,
+import {
+  encodeJson,
+  matchChannel,
+  type BusSubscription,
+  type DeliveredMessage,
+  type MessageBus,
+  type SubscriptionSpec,
 } from "clovejs/bus"
 
 /**
@@ -22,69 +24,59 @@ import type {
 export function fanoutBus(): MessageBus {
   const subscribers = new Set<{
     spec: SubscriptionSpec
-    deliver(message: MessageEnvelope): Promise<unknown>
+    deliver(message: DeliveredMessage): Promise<unknown>
     closed: boolean
   }>()
 
   return {
     capabilities: {
-      // An un-acked message never comes back: there is no queue behind this.
-      redelivery: false,
-      // With no redelivery there is no counter to keep.
-      attempts: false,
-      delayedRetry: false,
+      // An un-acked message never comes back: there is no queue behind this,
+      // so a consumer here declaring `.retry(...)` is a boot error.
+      retries: "none",
       // `PSUBSCRIBE`-style wildcards.
       patterns: true,
-      // Fire-and-forget: publish() resolves before anyone has received it.
-      confirms: false,
     },
 
     async publish(channel, payload) {
+      // Encoded once rather than per subscriber: this is the serialization
+      // boundary a real transport has, and passing `body` is what puts decoding
+      // inside the delivery path, where a malformed message gets a verdict.
+      const body = encodeJson(payload)
+
       for (const subscriber of subscribers) {
-        if (subscriber.closed || !matches(subscriber.spec.channel, channel)) continue
+        const selects = subscriber.spec.pattern
+          ? matchChannel(subscriber.spec.channel, channel)
+          : subscriber.spec.channel === channel
+        if (subscriber.closed || !selects) continue
+
         // Deliberately not awaited: a publisher does not wait for subscribers,
         // and the outcome is discarded because there is nothing to ack.
         void subscriber.deliver({
           channel,
           subscription: subscriber.spec.subscription,
-          payload,
-          attempt: 1,
+          body,
           headers: {},
           timestamp: new Date(),
         })
       }
     },
 
-    async subscribe(spec, deliver) {
+    async subscribe(spec, deliver, { report }) {
       const subscriber = { spec, deliver, closed: false }
       subscribers.add(subscriber)
+      // Core cannot see this loop, so a real adapter reports here whenever the
+      // connection drops and comes back. `app.bus.health()` reads the result,
+      // which is what makes a silently dead subscription visible to a probe.
+      report("consuming")
+
       const subscription: BusSubscription = {
         async close() {
           subscriber.closed = true
           subscribers.delete(subscriber)
+          report("stopped")
         },
       }
       return subscription
     },
   }
-}
-
-/** `*` matches one dot-separated segment, `#` matches zero or more. */
-function matches(selector: string, channel: string): boolean {
-  if (!selector.includes("*") && !selector.includes("#")) return selector === channel
-  return matchSegments(selector.split("."), channel.split("."))
-}
-
-function matchSegments(pattern: string[], value: string[]): boolean {
-  if (pattern.length === 0) return value.length === 0
-  const [head, ...rest] = pattern
-  if (head === "#") {
-    for (let i = 0; i <= value.length; i++) {
-      if (matchSegments(rest, value.slice(i))) return true
-    }
-    return false
-  }
-  if (value.length === 0) return false
-  if (head !== "*" && head !== value[0]) return false
-  return matchSegments(rest, value.slice(1))
 }

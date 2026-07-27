@@ -4,6 +4,7 @@ export interface Seen {
   channel: string
   subscription: string
   attempt: number
+  failures: number
   payload: unknown
 }
 
@@ -11,6 +12,7 @@ export default service(async () => {
   const seen: Seen[] = []
   const failures = new Map<string, number>()
   const scopes = { opened: 0, closed: 0 }
+  const deliveries = { opened: 0, closed: 0, triggers: [] as string[] }
 
   return {
     scopeOpened(): void {
@@ -21,6 +23,17 @@ export default service(async () => {
     },
     scopes(): { opened: number; closed: number } {
       return { ...scopes }
+    },
+
+    deliveryOpened(trigger: string): void {
+      deliveries.opened += 1
+      deliveries.triggers.push(trigger)
+    },
+    deliveryClosed(): void {
+      deliveries.closed += 1
+    },
+    deliveryScopes(): { opened: number; closed: number; triggers: string[] } {
+      return { ...deliveries, triggers: [...deliveries.triggers] }
     },
 
     record(entry: Seen): void {
@@ -41,6 +54,11 @@ export default service(async () => {
     reset(): void {
       seen.length = 0
       failures.clear()
+      scopes.opened = 0
+      scopes.closed = 0
+      deliveries.opened = 0
+      deliveries.closed = 0
+      deliveries.triggers.length = 0
     },
   }
 })

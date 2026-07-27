@@ -36,9 +36,8 @@ export class MessageValidationError extends Error {
  * validates against, whereas a bus has no SDK behind it and must do the parsing
  * itself.
  *
- * Three forms are accepted, and anything else is a boot error naming the file:
- * a schema with `.parse`, a Standard Schema with `~standard`, and a plain
- * object whose every value is a schema.
+ * Two forms are accepted, and anything else is a boot error naming the file: a
+ * schema with `.parse`, and a Standard Schema with `~standard`.
  */
 export function compileValidator(
   input: MessageSchema | null,
@@ -48,8 +47,7 @@ export function compileValidator(
 
   if (typeof input !== "object" && typeof input !== "function") {
     throw new CloveBootError(
-      "`input` must be a schema or an object of schemas, but it is " +
-        `${typeof input}.`,
+      `\`input\` must be a schema, but it is ${typeof input}.`,
       [file],
     )
   }
@@ -66,39 +64,13 @@ export function compileValidator(
     return (payload) => (input as SchemaLike).parse(payload)
   }
 
-  const entries = Object.entries(input as Record<string, unknown>)
-  if (entries.length === 0) return null
-
-  for (const [key, value] of entries) {
-    if (!value || typeof (value as SchemaLike).parse !== "function") {
-      throw new CloveBootError(
-        `\`input.${key}\` is not a schema. Every field of a bare input object ` +
-          `must be one, for example \`{ ${key}: z.string() }\`. Pass a whole ` +
-          `schema (\`z.object({...})\`) if you meant to validate the payload as ` +
-          `a unit.`,
-        [file],
-      )
-    }
-  }
-
-  const shape = entries as Array<[string, SchemaLike]>
-  return (payload) => {
-    if (typeof payload !== "object" || payload === null) {
-      throw new MessageValidationError([
-        `expected an object payload, received ${payload === null ? "null" : typeof payload}`,
-      ])
-    }
-    const source = payload as Record<string, unknown>
-    const out: Record<string, unknown> = {}
-    for (const [key, schema] of shape) {
-      try {
-        out[key] = schema.parse(source[key])
-      } catch (err) {
-        throw new MessageValidationError([`${key}: ${messageOf(err)}`])
-      }
-    }
-    return out
-  }
+  throw new CloveBootError(
+    "`input` is not a recognised schema. Pass a validator with a `parse()` " +
+      "method, or any Standard Schema validator (zod, valibot, arktype). To " +
+      "keep only some fields of a payload, name them in the schema itself — " +
+      "`z.object({ id: z.string() })` drops the rest.",
+    [file],
+  )
 }
 
 function unwrapStandard<T>(result: StandardResult<T>): T {

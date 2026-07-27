@@ -104,15 +104,16 @@ export class WsRuntime {
     route: SocketRoute,
     params: Record<string, string>,
   ): Promise<void> {
-    const container = this.#options.root.createChild("request")
+    const req = new CloveRequest(raw)
+    req.params = params
+    const container = this.#options.root.createChild("request", {
+      trigger: { kind: "ws", req },
+    })
     const entry = { socket, container }
     this.#connections.add(entry)
 
     const messageHandlers: Array<(msg: string | Buffer) => void | Promise<void>> = []
     const closeHandlers: Array<() => void | Promise<void>> = []
-
-    const req = new CloveRequest(raw)
-    req.params = params
 
     const args: WsArgs = {
       ctx: container.ctx,

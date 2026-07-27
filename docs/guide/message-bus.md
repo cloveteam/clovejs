@@ -11,7 +11,7 @@ want and adapt it in one file.
 Everything here comes from `clovejs/bus`, not the core barrel:
 
 ```ts
-import { bus, consume, reject, memoryBus } from "clovejs/bus"
+import { bus, consume, reject, pattern, memoryBus } from "clovejs/bus"
 ```
 
 ## A first bus
@@ -28,13 +28,26 @@ export default bus(memoryBus())
 
 `memoryBus()` is an in-process implementation for development, tests and
 single-process deployments — the analogue of the
-[`MemoryCacheStore`](/guide/caching). It answers `true` to all five
-capabilities, so an app developed against it behaves the same way once a real
-broker adapter replaces it: wildcards expand, attempt counts are accurate, retry
-delays are actually waited out, and `publish()` resolves only once every matching
-consumer has the message queued.
+[`MemoryCacheStore`](/guide/caching). By default it claims the whole contract:
+wildcards expand, redelivery carries the failure counter, and retry delays are
+actually waited out.
 
-What it does not do is outlive the process. Messages live in memory, nothing is
+That makes an app developed against it *portable*, which is not the same as
+identical. Being the most capable bus there is also makes it the weakest possible
+check — no capability mismatch can surface against a bus that claims everything,
+so every one waits for the day a real adapter arrives. `capabilities` fixes that:
+
+```ts
+export default bus(
+  memoryBus({
+    // Mirror the broker you actually deploy against, so its boot errors happen
+    // here instead of in staging.
+    capabilities: { retries: "immediate" },
+  }),
+)
+```
+
+What it cannot do is outlive the process. Messages live in memory, nothing is
 persisted, and nothing crosses to a second instance — so it is the right default
 for `clove dev` and the wrong one for anything horizontally scaled.
 
@@ -60,16 +73,16 @@ export default consume({
 ```
 
 The handler receives the payload first, exactly like an MCP `tool()`. `ctx` is
-the second argument, and the full envelope — `attempt`, `headers`, the concrete
-`channel` — is the third.
+the second argument, and the full envelope — `attempt`, `failures`, `headers`,
+the concrete `channel` — is the third.
 
 How the handler finishes decides what happens to the message:
 
 | The handler | CloveJS returns to the adapter | Which means |
 | --- | --- | --- |
 | returns | `{ action: "ack" }` | Done. The broker may forget the message. |
-| throws anything | `{ action: "retry", attempt, delay }` | Deliver it again — until `.retry({ attempts })` runs out, then `reject` |
-| throws `reject(reason)` | `{ action: "reject", reason, attempt }` | Give up now, skipping every remaining retry |
+| throws anything | `{ action: "retry", subscription, delay, headers, failures }` | Redeliver it to *this* subscription — until `.retry({ attempts })` runs out, then `reject` |
+| throws `reject(reason)` | `{ action: "reject", reason, failures }` | Give up now, skipping every remaining retry |
 
 `reject()` is for failures a second delivery cannot fix — an unknown tenant, a
 discriminator the handler will never understand. Where the message goes after a
@@ -98,6 +111,12 @@ advisory: `key` is the partition / ordering key for brokers that have one
 (Kafka, and Rabbit's consistent-hash exchange), `id` is a broker-level message
 id, `headers` ride along to the consumer as `message.headers`. An adapter whose
 broker has no equivalent simply ignores the field.
+
+Headers beginning `x-clove-` are reserved. Control metadata and user headers
+share one map on every broker, so the boundary is drawn by name: CloveJS strips
+that prefix from what a handler sees, and `publish()` throws if you set one.
+Without that rule a producer forwarding headers could hand a consumer a failure
+count it never earned, spending its whole retry budget on the first delivery.
 
 ## Nothing is derived from the file path
 
@@ -161,7 +180,7 @@ to connect fails the boot, and `onDestroy` runs on shutdown.
 
 ```ts
 // src/bus/events.ts
-import { bus, readAttempt, stampAttempt } from "clovejs/bus"
+import { bus, encodeJson, readFailures } from "clovejs/bus"
 import amqplib from "amqplib"
 
 export default bus(async (ctx, { onDestroy }) => {
@@ -171,11 +190,8 @@ export default bus(async (ctx, { onDestroy }) => {
 
   return {
     capabilities: {
-      redelivery: true,
-      attempts: true,
-      delayedRetry: false,
+      retries: "immediate",
       patterns: true,
-      confirms: true,
     },
 
     publish(channel, payload, options) {
@@ -183,20 +199,22 @@ export default bus(async (ctx, { onDestroy }) => {
         ch.publish(
           "events",
           channel,
-          Buffer.from(JSON.stringify(payload)),
+          Buffer.from(encodeJson(payload)),
           { messageId: options?.id, headers: options?.headers, persistent: true },
           (err) => (err ? reject(err) : resolve()),
         )
       })
     },
 
-    async subscribe(spec, deliver) {
+    async subscribe(spec, deliver, { report }) {
       await ch.prefetch(spec.maxInFlight)
       const q = await ch.assertQueue(`${spec.subscription}.${spec.channel}`, {
         durable: true,
         deadLetterExchange: "events.dlx",
       })
       await ch.bindQueue(q.queue, "events", spec.channel)
+      report("consuming")
+      conn.on("close", () => report("stopped"))
 
       const { consumerTag } = await ch.consume(q.queue, async (raw) => {
         if (!raw) return
@@ -207,22 +225,31 @@ export default bus(async (ctx, { onDestroy }) => {
           // be a pattern.
           channel: raw.fields.routingKey,
           subscription: spec.subscription,
-          payload: JSON.parse(raw.content.toString()),
+          // Bytes, not a parsed object: decoding belongs inside the delivery
+          // path, so a malformed message gets a `reject` verdict instead of
+          // throwing here, where nothing can ack it.
+          body: raw.content,
           headers,
-          attempt: readAttempt(headers),
+          failures: readFailures(headers),
         })
 
         if (outcome.action === "ack") return ch.ack(raw)
         if (outcome.action === "reject") return ch.nack(raw, false, false)
 
-        // Retry: republish carrying the next attempt number, then ack the
-        // original. `nack(requeue)` would lose the counter and spin.
-        // `outcome.delay` is ignored here — which is exactly what
-        // `delayedRetry: false` above declares, and why CloveJS refuses at boot
-        // to let a consumer on this bus ask for a backoff.
-        ch.publish("events", raw.fields.routingKey, raw.content, {
+        // Retry: redeliver to *this queue* and ack the original. Publishing back
+        // to the "events" exchange would re-route the message to every other
+        // queue bound to the same key, so billing's retry would silently make
+        // email process the order twice. `nack(requeue)` would lose the counter
+        // and spin.
+        //
+        // `outcome.headers` already carries the counter — core stamps it, so an
+        // adapter cannot forget to increment it. `outcome.delay` is ignored
+        // here, which is exactly what `retries: "immediate"` declares, and why
+        // CloveJS refuses at boot to let a consumer on this bus ask for a
+        // backoff.
+        ch.publish("", q.queue, raw.content, {
           ...raw.properties,
-          headers: stampAttempt(headers, outcome.attempt),
+          headers: outcome.headers,
         })
         ch.ack(raw)
       })
@@ -233,64 +260,101 @@ export default bus(async (ctx, { onDestroy }) => {
 })
 ```
 
-`deliver(envelope)` is the one call into CloveJS. It runs the whole delivery —
-scope, validation, handler — and resolves with the outcome you have to translate
-into broker vocabulary. It does not throw, and it does not act on the broker
-itself:
+`deliver(message)` is the one call into CloveJS. It runs the whole delivery —
+scope, decode, validation, handler — and resolves with the outcome you have to
+translate into broker vocabulary. It does not throw, and it does not act on the
+broker itself:
 
 | `outcome.action` | The adapter must |
 | --- | --- |
 | `"ack"` | Acknowledge — `ch.ack`, commit the offset, delete from the queue |
-| `"retry"` | Arrange one more delivery, `outcome.delay` ms from now, reporting `outcome.attempt` as the next `envelope.attempt` |
+| `"retry"` | Arrange one more delivery **to `outcome.subscription` alone**, `outcome.delay` ms from now, carrying `outcome.headers` |
 | `"reject"` | Stop delivering it — dead-letter, park, or drop, whichever your topology says |
 
 Note who waits: `outcome.delay` is a number of milliseconds CloveJS computed but
 never sleeps on. The adapter implements the wait with whatever its broker
 offers — a delayed exchange, `visibilityTimeout`, a `NAK` with a delay, a
-scheduled republish. `delayedRetry: false` says you have no such mechanism.
+scheduled republish. `retries: "immediate"` says you have no such mechanism.
 
-Two properties make this work across brokers with irreconcilable models:
+Three properties make this work across brokers with irreconcilable models:
 
 **The adapter owns the driver loop.** CloveJS never polls and never
 acknowledges. It hands you a `deliver` callback and gives you back an outcome to
 translate. That is why Rabbit's per-message ack, Kafka's offset commit and SQS's
-visibility timeout all fit the same interface.
+visibility timeout all fit the same interface. Because core cannot see that loop,
+it also cannot tell a healthy subscription from one whose connection dropped —
+so the adapter `report()`s state changes, and `app.bus.health()` exposes them for
+a readiness probe.
+
+**A retry is a redelivery, never a re-publish.** One channel usually has several
+subscriptions, and sending a failed message back to the exchange or topic routes
+it to all of them. `outcome.subscription` names the only one that may see it
+again.
 
 **A consumer never sees a native message.** No AMQP channel, no Kafka offset, no
 `raw` escape hatch. If a handler needs the native client, inject it as an
 ordinary service.
 
+### Decoding
+
+Passing `body` rather than `payload` puts the bytes-to-value step inside the
+delivery path. It is optional, and it is the difference between a poison message
+and a poison loop: a `JSON.parse` in your own consume callback throws where no
+outcome exists, so nothing acks and an at-least-once broker returns the same
+unparseable bytes forever. Done by core, a failure becomes
+`reject` with `Payload failed to decode: …` — the same verdict, for the same
+reason, as a payload that fails `input` validation.
+
+JSON is the default both ways; `encodeJson` is exported so `publish()` need not
+hand-roll it. A bus that speaks something else says so once:
+
+```ts
+decode: (body) => msgpack.decode(body),
+```
+
 ## Capabilities
 
-Every bus declares five booleans, and none is optional: an adapter author has to
-answer all five, and a `bus/` file that leaves one out fails the boot naming
-itself. The answers are not documentation. CloveJS compares them against what
-every consumer on that bus asks for and refuses to start on a mismatch, rather
-than letting the gap surface as a runtime surprise.
+Every bus answers two questions, and neither is optional: a `bus/` file that
+leaves one out fails the boot naming itself. The answers are not documentation.
+CloveJS compares them against what every consumer on that bus asks for and
+refuses to start on a mismatch, rather than letting the gap surface as a runtime
+surprise.
 
-| Capability | `true` promises that |
+```ts
+capabilities: {
+  retries: "none" | "immediate" | "delayed",
+  patterns: boolean,
+}
+```
+
+| Capability | Promises that |
 | --- | --- |
-| `redelivery` | an un-acked message comes back at all. False for Redis Pub/Sub, where an undelivered message is simply gone |
-| `attempts` | the `envelope.attempt` you pass to `deliver()` is the real delivery count, not always 1. Implies `redelivery` |
-| `delayedRetry` | you actually wait `outcome.delay` ms before redelivering, rather than dropping the number |
-| `patterns` | `spec.channel` may contain wildcards and your broker will expand them |
-| `confirms` | your `publish()` promise resolves only after the broker accepted the message, not merely after the write |
+| `retries: "none"` | an un-acked message never comes back. Redis Pub/Sub, where an undelivered message is simply gone |
+| `retries: "immediate"` | it comes back carrying `outcome.headers`, but `outcome.delay` is ignored |
+| `retries: "delayed"` | it comes back, and you actually wait `outcome.delay` ms first |
+| `patterns` | `spec.channel` may be a selector, and your broker will expand it |
 
 What each refusal looks like:
 
 | A consumer declares | Its bus says | Result |
 | --- | --- | --- |
-| `.retry({ attempts: n })`, `n > 1` | `redelivery: false` | Boot error — retrying cannot happen |
-| `.retry({ attempts: n })`, `n > 1` | `attempts: false` | Boot error — the cap would never fire |
-| `.retry({ backoff })` | `delayedRetry: false` | Boot error — the delay would be dropped |
-| `channel: "orders.#"` | `patterns: false` | Boot error |
-| — | `confirms: false` | One boot warning naming the bus |
+| `.retry({ attempts: n })`, `n > 1` | `retries: "none"` | Boot error — retrying cannot happen |
+| `.retry({ backoff })` | `retries: "immediate"` | Boot error — the delay would be dropped |
+| `channel: pattern("orders.#")` | `patterns: false` | Boot error |
 
 These are errors, not warnings, because each means a guarantee the code on the
-page asks for does not exist at runtime. A bus with `attempts: false` is still
-perfectly usable — it just cannot cap retries, so consumers on it must not ask.
-`confirms: false` is only a warning because it degrades a promise rather than
-breaking one: `publish()` still works, it just resolves earlier than it reads.
+page asks for does not exist at runtime. A bus with `retries: "none"` is still
+perfectly usable — it just cannot retry, so consumers on it must not ask.
+
+The list is deliberately short. **A capability earns its place only if CloveJS
+changes what it does based on the answer.** Whether the counter survives a
+redelivery is not one: core stamps it onto `outcome.headers`, so any adapter that
+redelivers the message core handed back carries it for free, and one that drops
+the headers instead — a bare `nack(requeue)` — has a bug rather than a transport
+limit. Whether `publish()` waits for a broker acknowledgement is not one either:
+it is real and worth knowing, but core does nothing differently, and a permanent
+boot warning about a bus that is *deliberately* fire-and-forget only teaches
+people to ignore the boot log.
 
 All of this is checked once, after every bus has connected and before anything
 subscribes, so the mismatch surfaces on the boot log rather than at 3am on a
@@ -298,92 +362,105 @@ poison message.
 
 ## Retries
 
-**CloveJS computes the schedule. The adapter carries the counter.**
+**CloveJS computes the schedule and stamps the counter. The adapter carries it.**
 
 Backoff maths is pure and identical for every broker, so leaving it to adapters
-would only guarantee they diverge. Counting deliveries is broker-specific, so
-core cannot do it: it holds no state between deliveries, and a redelivery may
-land on a different replica.
+would only guarantee they diverge. Where the counter *travels* is broker-specific,
+so core cannot do that part: it holds no state between deliveries, and a
+redelivery may land on a different replica.
 
 | Handler | Outcome |
 | --- | --- |
 | Returns | `ack` |
-| Throws | `retry` carrying `attempt + 1` and a computed `delay`, until `attempts` is exhausted — then `reject` |
+| Throws | `retry` carrying `failures + 1`, a computed `delay` and stamped `headers`, until `attempts` is exhausted — then `reject` |
 | Throws `reject(reason)` | `reject`, skipping remaining retries |
-| Fails `input` validation | `reject` — it will not parse on attempt two either |
-| Throws on a `redelivery: false` bus | `reject` immediately |
+| Fails to decode | `reject` — those bytes will not parse on delivery two either |
+| Fails `input` validation | `reject` — same reasoning |
+| Throws on a `retries: "none"` bus | `reject` immediately |
 
-`.retry({ attempts })` counts *total* deliveries including the first, so
+`backoff.base` is the delay before the second delivery; subsequent ones multiply
+by `factor` (default 2), capped at `max` (default 30s), with equal jitter applied
+unless `jitter: false` — half the delay fixed, half spread, so a burst of
+simultaneous failures does not come back as a synchronised burst.
+
+### What `attempts` counts, and what it does not
+
+A message carries one number, and the envelope exposes the obvious view of it:
+
+| Envelope field | Counts |
+| --- | --- |
+| `failures` | handler runs that ended in a throw. 0 on a first delivery |
+| `attempt` | `failures + 1` — which run of the handler this is |
+
+`.retry({ attempts })` counts handler attempts including the first, so
 `attempts: 1` is the default no-retry behaviour and `attempts: 5` means at most
-four redeliveries. `backoff.base` is the delay before the second delivery;
-subsequent ones multiply by `factor` (default 2), capped at `max` (default 30s),
-with equal jitter applied unless `jitter: false` — half the delay fixed, half
-spread, so a burst of simultaneous failures does not come back as a
-synchronised burst.
+four redeliveries *caused by failures*.
+
+It bounds handler failures, and nothing else — which matters when a delivery ends
+some other way. A delivery that dies with the process, or that is still running
+when `busDrainTimeout` expires and is [abandoned un-acked](#shutdown), never ran
+the handler to a verdict, so it never spent an attempt. A handler that reliably
+outlives the drain timeout would be redelivered indefinitely as far as CloveJS is
+concerned.
+
+**Bounding those is the broker's job, and every broker that can count them
+already does it better.** SQS has a redrive policy with `maxReceiveCount`,
+JetStream has `MaxDeliver`, Rabbit has a dead-letter policy on the queue. Each is
+enforced broker-side, so it also covers the process that crashed and never came
+back — which nothing running inside your app can see. Set it where you declare
+the topology, in the same adapter that declares the queue.
 
 ### Carrying the counter
 
-`envelope.attempt` is the number the retry cap is compared against: with
-`.retry({ attempts: 5 })`, a failure on attempt 5 rejects instead of retrying
-again. So every delivery has to arrive knowing which delivery it is.
-
-For brokers that count natively — SQS's `ApproximateReceiveCount`, NATS
-JetStream's `num_delivered` — read theirs and pass it as `attempt`. For those
-that do not (RabbitMQ and Kafka among them), the count has to travel *with the
-message*, and CloveJS ships the mechanism so that every adapter does it
-identically:
+Every delivery has to arrive knowing how many handler runs already failed on it,
+because core holds no state between deliveries and a redelivery may land on a
+different replica. So the count travels *with the message*, and CloveJS ships the
+mechanism so that every adapter does it identically:
 
 ```ts
-import { readAttempt, stampAttempt, ATTEMPT_HEADER } from "clovejs/bus"
+import { readFailures, ATTEMPT_HEADER } from "clovejs/bus"
 ```
 
 | Export | What it is | Where you call it |
 | --- | --- | --- |
-| `ATTEMPT_HEADER` | the string `"x-clove-attempt"` — the header the count rides in | rarely; the two helpers use it for you |
-| `readAttempt(headers)` | reads that header, returns a number | on the way **in**, to fill `envelope.attempt` |
-| `stampAttempt(headers, n)` | returns a **copy** of the headers with the counter set to `n` | on the way **out**, on the message you republish for a retry |
+| `readFailures(headers)` | reads the counter, returning 0 for a first delivery | on the way **in**, as `failures` |
+| `outcome.headers` | the headers to attach on a retry, counter already stamped | on the way **out**, written verbatim |
+| `ATTEMPT_HEADER` | the string `"x-clove-attempt"`, where the count rides | rarely; the above use it for you |
 
-Neither helper touches the broker or the payload — `stampAttempt` returns a new
-plain object and mutates nothing, so what it affects is exactly one header on
-the message you are about to publish.
+Core stamps the outbound headers itself rather than leaving each adapter to
+remember an increment — a forgotten one is invisible until a poison message
+loops. `stampFailures` stays exported for transports that cannot carry headers
+as-is and have to rebuild them.
 
 Together they close the loop. A message failing twice under
 `.retry({ attempts: 3 })` goes:
 
-| Delivery | Header on arrival | `readAttempt` → `envelope.attempt` | Handler | Outcome | Adapter republishes with |
+| Delivery | Header on arrival | `failures` | Handler | Outcome | Adapter redelivers with |
 | --- | --- | --- | --- | --- | --- |
-| 1st | absent | `1` | throws | `retry`, `attempt: 2` | `stampAttempt(headers, 2)` |
-| 2nd | `x-clove-attempt: 2` | `2` | throws | `retry`, `attempt: 3` | `stampAttempt(headers, 3)` |
-| 3rd | `x-clove-attempt: 3` | `3` | throws | `reject` — cap reached | nothing |
+| 1st | absent | `0` | throws | `retry`, `failures: 1` | `outcome.headers` |
+| 2nd | `x-clove-attempt: 2` | `1` | throws | `retry`, `failures: 2` | `outcome.headers` |
+| 3rd | `x-clove-attempt: 3` | `2` | throws | `reject` — cap reached | nothing |
 
-`readAttempt` returns `1` when the header is absent, which is the normal first
-delivery, and *also* when the value is corrupt — not a number, zero, negative.
-That direction is chosen on purpose: a garbled counter that read as a huge
-number would reject a healthy message on its first try, whereas reading as 1
-costs at most a few extra attempts. CloveJS applies the same rule to whatever
-you pass as `envelope.attempt`, so a native count that arrives as `0` or `NaN`
-is normalized to 1 rather than corrupting the cap.
+A corrupt counter reads as a first delivery — not a number, zero, negative, all
+of it. That direction is chosen on purpose: a garbled counter that read as a huge
+number would reject a healthy message on its first try, whereas reading as 0
+costs at most a few extra attempts.
 
-Skip the whole mechanism by declaring `attempts: false` — then the bus is
-perfectly usable, it just cannot cap retries, and CloveJS fails at boot if a
-consumer on it asks for one.
+Skip the whole mechanism by declaring `retries: "none"` — then the bus is
+perfectly usable, it just cannot retry, and CloveJS fails at boot if a consumer
+on it asks to.
 
 ## Wildcards
 
-When the bus advertises `patterns: true`, `channel` may be a selector rather
-than a literal. The syntax is the broker's, not CloveJS's — the selector is
-passed through to `subscribe()` verbatim and expanded there. In the AMQP and
-NATS conventions the in-memory bus and most adapters follow, `*` matches one
-dot-separated segment and `#` matches zero or more.
-
-CloveJS itself only looks for the characters `*`, `#` and `>` in a `channel`, to
-decide whether the consumer is asking for something a `patterns: false` bus
-cannot do.
+When the bus advertises `patterns: true`, a channel may be a selector rather than
+a literal — wrapped in `pattern()`, never inferred:
 
 ```ts
+import { consume, pattern } from "clovejs/bus"
+
 export default consume<OrderEvent>({
   bus: "events",
-  channel: "orders.#",
+  channel: pattern("orders.#"),
   subscription: "analytics",
   maxInFlight: 8,
 
@@ -392,6 +469,21 @@ export default consume<OrderEvent>({
     ctx.ledger.record(message.channel, order.orderId)
   },
 })
+```
+
+The syntax is the broker's, not CloveJS's — the selector is passed through to
+`subscribe()` verbatim and expanded there, with `spec.pattern` telling the adapter
+which it received. In the AMQP and NATS conventions the in-memory bus and most
+adapters follow, `*` matches one dot-separated segment and `#` matches zero or
+more.
+
+A bare string containing `*`, `#` or `>` is a boot error, not a pattern. Guessing
+from punctuation is wrong in both directions: it silently promotes a literal
+channel named `user.#1` into a subscription to far more than intended, and it
+leaves no way to say the opposite. For that rare literal, there is `literal()`:
+
+```ts
+channel: literal("user.#1")   // yes, the name really contains a #
 ```
 
 ## Validation
@@ -445,17 +537,20 @@ named.
 ### Without zod
 
 `input` is duck-typed: CloveJS looks at the *shape* of what you pass rather than
-importing any library, so three forms work and anything else is a boot error
+importing any library, so two forms work and anything else is a boot error
 naming the file.
 
 | Pass | Recognised because | The handler receives |
 | --- | --- | --- |
 | Any [Standard Schema](https://standardschema.dev) validator — zod 3.24+, valibot, arktype | it exposes `~standard` | that validator's output |
 | Anything with a `parse()` that returns the value or throws | it has `.parse` | whatever `parse` returns |
-| An object mapping field names to per-field schemas, e.g. `{ orderId: z.string() }` | every value has `.parse` | an object of just those fields — anything else in the payload is dropped |
 
 The second row is the escape hatch: a validator you write by hand needs no
 dependency at all, and still gets full type inference.
+
+To keep only some fields of a payload, name them in the schema itself —
+`z.object({ orderId: z.string() })` drops everything it does not mention, and
+what the handler gets is what `message.payload` holds.
 
 ```ts
 // src/consumers/billing/orderCreated.ts
@@ -523,10 +618,20 @@ first.
 defaults to `1` and reaches the adapter as `spec.maxInFlight`, which is where it
 is enforced — as `prefetch` on Rabbit, `maxMessages` on SQS, and so on.
 
-Raising it is an explicit trade: concurrent deliveries forfeit per-key ordering,
-so `orders.cancelled` may be processed before `orders.created` for the same key.
-Raise it on counters and aggregations, not on anything that reads its own
-writes.
+It is a concurrency limit, **not an ordering guarantee**. `maxInFlight: 1` bounds
+one process, and a second replica has its own: two workers on one Rabbit queue
+interleave freely no matter what either sets.
+
+**Ordering is a property of the topology, not of anything CloveJS can declare.**
+It comes from a consistent-hash exchange, a partitioned topic, a FIFO queue — all
+of it set up in the adapter, all of it invisible to core, and none of it
+something a field on a consumer could deliver. So there is no `ordered` option to
+write: if your consumer needs order, give the broker a topology that provides it,
+and leave `maxInFlight` at 1 so this process does not undo it.
+
+Raising `maxInFlight` is the ordinary trade: `orders.cancelled` may be processed
+before `orders.created` for the same key. Raise it on counters and aggregations,
+not on anything that reads its own writes.
 
 ## Per-delivery hooks
 
@@ -539,39 +644,57 @@ of it that already fits. `middlewares/` wrap an HTTP request: they take
 `{ req, res, handler }` and their whole vocabulary — status codes, headers,
 short-circuiting with a response — is meaningless for a message that has no
 client waiting on it. `di/` is the mechanism that *does* carry over unchanged.
-Every delivery opens its own `request`-scoped container, exactly as every HTTP
-request does, so a `request`-lifetime value is already per-delivery state with a
-matching teardown.
+Every delivery opens its own request scope, exactly as every HTTP request does,
+so a scoped value is already per-delivery state with a matching teardown.
 
-The one thing to know is that resolution is lazy: a factory nothing reads never
-runs, so a tracing value nobody injects would silently do nothing. `eager: true`
-is what turns it from an available value into a hook that fires on every
-delivery:
+Two things turn it from an available value into a bus hook. `eager: true`,
+because resolution is lazy — a factory nothing reads never runs, so a tracing
+value nobody injects would silently do nothing. And the `trigger` guard,
+because a request scope also opens for HTTP requests, sockets and MCP calls —
+the factory's second argument says which one opened this scope:
 
 ```ts
 // src/di/tracing.ts
 export default di({
   lifetime: "request",
   eager: true,
-  value(ctx, { onDestroy }) {
-    const span = tracer.startSpan("delivery")
+  value(ctx, { onDestroy, trigger }) {
+    if (trigger?.kind !== "delivery") return null
+    const span = tracer.startSpan(trigger.consumer)
     onDestroy(() => span.end())
     return span
   },
 })
 ```
 
-One consequence worth stating plainly: that value is not bus-specific. The same
-file fires on every HTTP request as well, because a request and a delivery are
-the same shape of work under the same lifetime. If a hook must apply to only one
-of them, branch inside the factory rather than expecting the framework to.
+`trigger` is a discriminated union: `kind` is `"http"`, `"ws"`, `"mcp"` or
+`"delivery"`, each narrowing to what that kind actually carries — a delivery
+brings the bus, channel, subscription and consumer name. It is `undefined` for
+`singleton` and `session` factories, which outlive any single unit of work.
+Drop the guard for a hook that genuinely serves every kind of work — a metrics
+timer, say — and branch on `trigger.kind` only where the difference matters.
+
+### What this does not cover
+
+A `di/` value runs before the handler and tears down after it, so it can time a
+delivery — but it cannot see the outcome, and it cannot short-circuit one.
+Outcome-aware work (a retry-rate metric, dedup that acks a message it has already
+processed) belongs in the handler, or in a service the handler calls:
+
+```ts
+async handler(order, ctx) {
+  if (await ctx.seen.has(order.orderId)) return   // ack without redoing the work
+  await ctx.invoices.createForOrder(order)
+  await ctx.seen.add(order.orderId)
+}
+```
 
 ## Scopes
 
-A delivery reuses the `request` lifetime, but its container is **isolated**,
-meaning its parent is the singleton root directly, with no session scope in
-between. Reading a `session`-lifetime value from a consumer therefore throws
-`ScopeUnavailableError` naming the key, rather than returning something wrong.
+A delivery opens a request scope whose parent is the singleton root directly,
+with no session in between. Reading a `session`-lifetime value from a consumer
+therefore throws `ScopeUnavailableError` naming the key, rather than returning
+something wrong.
 
 That is deliberate. Without isolation the lookup would walk past the missing
 scope and resolve into the singleton root, where the value would be cached for
@@ -580,14 +703,14 @@ one. `singleton` and `request` values work normally.
 
 ## Testing
 
-By default an app subscribes every consumer during boot. `bus: "manual"` holds
-that back until you call `app.bus.start()`, so a test can drive one message at a
-time instead of racing the broker:
+By default an app subscribes every consumer during boot. `startConsumers: false`
+holds that back until you call `app.bus.start()`, so a test can drive one message
+at a time instead of racing the broker:
 
 ```ts
 import { createTestApp } from "clovejs/testing"
 
-const app = await createTestApp({ bus: "manual" })   // subscriptions unstarted
+const app = await createTestApp({ startConsumers: false })
 
 // One message through the full delivery path — scope, eager values,
 // validation, handler, outcome — with no broker and no timers.
@@ -618,18 +741,18 @@ goes through the real bus object, which for `memoryBus()` means retries, delays
 and dead-lettering all actually happen.
 
 Because `dispatch()` does not itself redeliver, the way to test a redelivery is
-to state which one it is. Pass `attempt` and you get the outcome that delivery
+to state which one it is. Pass `failures` and you get the outcome that delivery
 would produce — including exhaustion, where a consumer capped at 5 rejects
 instead of asking for a sixth:
 
 ```ts
-const last = await app.bus.dispatch({ …, attempt: 5 })
+const last = await app.bus.dispatch({ …, failures: 4 })
 expect(last).toMatchObject({ action: "reject" })
 ```
 
-`app.bus.published(name)` reads the recorded publishes off an in-memory bus, so
-it works against `memoryBus()` and throws an explanatory error on any real
-adapter — a broker connection has nothing to record.
+`app.bus.published(name)` and `dead(name)` read an in-memory bus, so they work
+against `memoryBus()` and throw an explanatory error on any real adapter — a
+broker connection has nothing to record. `app.bus.health()` works everywhere.
 
 ## Shutdown
 
@@ -645,16 +768,59 @@ acking work that did not finish — is data loss.
 
 ## What stays out
 
-Topology creation, broker configuration, serialization format, the delay
-*mechanism*, dead-letter routing, transactional publishing, "exactly once", and
-native message access. All of it sits behind the adapter, in your code, where
-the broker-specific knowledge already is.
+Topology creation, broker configuration, the delay *mechanism*, dead-letter
+routing, transactional publishing, "exactly once", and native message access. All
+of it sits behind the adapter, in your code, where the broker-specific knowledge
+already is.
 
-**Cross-bus transactions** most of all: publishing to two buses atomically is
-not something two connections can offer, and the API does not imply it.
+Three things that look like they belong here and do not:
 
-A **transactional outbox** is a recipe rather than a feature — wrap the bus you
-return from `bus/<name>.ts`.
+**A cap on total deliveries.** Only the broker can count hand-overs that never
+reached the handler, and every broker that can count them already caps them
+better — broker-side, where it also covers the process that crashed and never
+came back. `retry({ attempts })` caps handler failures; a redrive policy caps the
+rest.
+
+**Ordering.** It comes from a consistent-hash exchange, a partitioned topic, a
+FIFO queue — topology, set up in the adapter. A field on a consumer could only
+ever restate a promise it has no way to keep.
+
+**Publish confirmation.** Whether `publish()` waits for a broker acknowledgement
+is real and worth knowing, but core behaves identically either way, so it is
+documentation rather than a capability — and a boot warning about a bus that is
+deliberately fire-and-forget only teaches people to ignore the boot log.
+
+Serialization is *pluggable* rather than absent: JSON by default, one `decode`
+function to change it. Leaving it out entirely only meant every adapter
+hand-rolled the one part of the problem that has a correct universal answer — and
+did it outside the delivery lifecycle, where a malformed message cannot get a
+verdict.
+
+### Idempotency is yours
+
+Delivery is at-least-once, so a handler can run twice on one message: a retry
+re-runs everything, including whatever it published the first time. The consumer
+at the top of this page creates an invoice *and* publishes `invoice.created`, and
+a retry after the invoice succeeds duplicates both.
+
+Nothing in the framework can fix that — the fix is a key your handler checks, and
+`options.id` is the natural one to key on:
+
+```ts
+async handler(order, ctx) {
+  const invoice = await ctx.invoices.createForOrder(order)   // upsert on orderId
+  await ctx.bus.events.publish("invoice.created", invoice, { id: invoice.id })
+}
+```
+
+Make the write idempotent (an upsert, a unique constraint, a `seen` set in
+[`ctx.cache`](/guide/caching)) and the second run becomes a no-op. A
+[transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html)
+is the general answer, and it is a recipe: wrap the bus you return from
+`bus/<name>.ts`.
+
+**Cross-bus transactions** most of all: publishing to two buses atomically is not
+something two connections can offer, and the API does not imply it.
 
 ## See also
 

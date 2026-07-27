@@ -383,7 +383,9 @@ export class McpRuntime {
           sendNotification?: (notification: unknown) => void
         }
       | undefined
-    const container = parent.createChild("request")
+    const container = parent.createChild("request", {
+      trigger: { kind: "mcp", method: file },
+    })
     const args: McpToolArgs = {
       ctx: container.ctx,
       sessionId: typeof info?.sessionId === "string" ? info.sessionId : null,
@@ -581,7 +583,9 @@ export class McpRuntime {
     run: (ctx: RuntimeCtx, args: McpToolArgs) => T | Promise<T>,
   ): Promise<T> {
     const auth = await this.#testAuth(opts)
-    const container = this.#options.root.createChild("request")
+    const container = this.#options.root.createChild("request", {
+      trigger: { kind: "mcp", method: "test-invoke" },
+    })
     const args: McpToolArgs = {
       ctx: container.ctx,
       sessionId: opts.sessionId ?? null,

@@ -1,7 +1,7 @@
 {
   "name": "clovejs",
   "version": "0.4.0",
-  "description": "The backend framework where MCP is a first-class citizen, along with REST and WebSockets. CloveJS brings Next.js/Nuxt-inspired file-based routing to Node.js — your folder structure defines your routes, services, middlewares and injectables, fully typed, with zero manual registration.",
+  "description": "The backend framework where MCP is a first-class citizen, along with REST and WebSockets. CloveJS brings Next.js/Nuxt-inspired file-based routing to Node.js \u2014 your folder structure defines your routes, services, middlewares and injectables, fully typed, with zero manual registration.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://cloveteam.github.io/clovejs/",

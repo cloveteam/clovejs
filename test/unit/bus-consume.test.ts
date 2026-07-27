@@ -81,12 +81,12 @@ describe("consume() payload inference", () => {
     })
   })
 
-  it("infers from an object of per-field schemas, keeping only those fields", () => {
+  it("keeps only the fields the schema names, dropping the rest", async () => {
     const def = consume({
       bus: "events",
       channel: "orders.created",
       subscription: "billing",
-      input: { orderId: z.string(), total: z.number() },
+      input: z.object({ orderId: z.string(), total: z.number() }),
       handler(payload) {
         const typed: OrderCreated = payload
         void typed
@@ -94,7 +94,7 @@ describe("consume() payload inference", () => {
     })
 
     const validate = compileValidator(def.input, "consumers/billing.ts")!
-    expect(validate({ orderId: "o1", total: 10, extra: true })).toEqual({
+    expect(await validate({ orderId: "o1", total: 10, extra: true })).toEqual({
       orderId: "o1",
       total: 10,
     })

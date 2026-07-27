@@ -51,11 +51,12 @@ export interface AppOptions {
    */
   moduleCache?: boolean
   /**
-   * When consumers start receiving. `"auto"` (the default) subscribes during
-   * boot; `"manual"` leaves subscriptions unstarted until `app.bus.start()`,
-   * which is what tests want.
+   * Whether consumers subscribe during boot. Defaults to true.
+   *
+   * Set it false to leave subscriptions unstarted until `app.bus.start()`, so a
+   * test can drive one message at a time instead of racing the broker.
    */
-  bus?: "auto" | "manual"
+  startConsumers?: boolean
   /** How long shutdown waits for in-flight deliveries. Defaults to 30s. */
   busDrainTimeout?: number
   /** Path the MCP endpoint is served from. Defaults to `/mcp`. */
@@ -174,7 +175,11 @@ export class CloveApp {
           })()
         : this.root
 
-      requestContainer = parent.createChild("request")
+      // The trigger tells a `request`-lifetime factory that serves both HTTP
+      // requests and message deliveries which one opened its scope.
+      requestContainer = parent.createChild("request", {
+        trigger: { kind: "http", req, res },
+      })
 
       // `di({ eager: true })` values are the per-request hook: their factories
       // would otherwise never run, since resolution is lazy.
@@ -384,11 +389,14 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
     },
   })
 
-  if (scan.registry.has("bus")) {
-    throw new CloveBootError(
-      '`ctx.bus` is reserved by CloveJS. Rename the service or DI value that provides "bus".',
-      [scan.registry.get("bus")!.file],
-    )
+  for (const reserved of ["bus"] as const) {
+    if (scan.registry.has(reserved)) {
+      throw new CloveBootError(
+        `\`ctx.${reserved}\` is reserved by CloveJS. Rename the service or DI ` +
+          `value that provides "${reserved}".`,
+        [scan.registry.get(reserved)!.file],
+      )
+    }
   }
   // One property per `bus/` file, each narrowed to its publish half — a handler
   // publishes, only the runtime subscribes. Registered even with no buses, so
@@ -488,7 +496,7 @@ export async function createApp(options: AppOptions = {}): Promise<CloveApp> {
   // subscribes: a project asking for a guarantee its broker cannot provide
   // fails here, naming both files, rather than on a poison message later.
   await bus.init()
-  if ((options.bus ?? "auto") === "auto") await bus.start()
+  if (options.startConsumers !== false) await bus.start()
 
   return new CloveApp(scan, root, logger, sessions, ws, mcp, cache, bus, {
     bodyLimit: options.bodyLimit ?? DEFAULT_BODY_LIMIT,

@@ -1,13 +1,10 @@
 import { bus, type MessageBus } from "clovejs/bus"
 
-/** A fire-and-forget bus: no redelivery, no counter, no confirms. */
+/** A fire-and-forget bus: nothing comes back, nothing expands. */
 const fanout: MessageBus = {
   capabilities: {
-    redelivery: false,
-    attempts: false,
-    delayedRetry: false,
+    retries: "none",
     patterns: false,
-    confirms: false,
   },
   async publish() {
     /* dropped: nothing subscribes in the fixture */

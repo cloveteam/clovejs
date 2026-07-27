@@ -98,12 +98,24 @@ interface DiSpec<T = any> {
 
 interface LifecycleHooks {
   onDestroy(fn: () => void | Promise<void>): void
+  readonly trigger?: Trigger
 }
+
+type Trigger =
+  | { kind: "http"; req: CloveRequest; res: CloveResponse }
+  | { kind: "ws"; req: CloveRequest }
+  | { kind: "mcp"; method: string }
+  | { kind: "delivery"; bus: string; channel: string; subscription: string; consumer: string }
 ```
 
 `M` is the resolved service value. The `ThisType<M>` woven into the awaited type
 keeps `this` typed as `M` inside the factory. Consumers unwrap the definition
 with `Awaited<M>` (which is just `M`).
+
+`trigger` is what opened the scope a factory's value lives in — see
+[Knowing what opened the scope](/guide/dependency-injection#knowing-what-opened-the-scope).
+It is `undefined` for `singleton` and `session` factories, which outlive any
+single unit of work.
 
 ## WebSockets
 

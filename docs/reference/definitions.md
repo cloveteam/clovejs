@@ -187,19 +187,21 @@ source is either a `MessageBus` object or a `(ctx, hooks)` factory, branching on
 // With validation: the payload type is inferred from `input`.
 consume<S extends MessageSchema>(spec: {
   bus: BusName
-  channel: string
+  channel: ChannelSelector
   subscription: string
   input: S
   maxInFlight?: number
+  ordered?: "per-key" | "per-partition"
   handler: (payload: InferPayload<S>, ctx, message) => unknown
 }): ConsumerDefinition
 
 // Without it: name the payload type.
 consume<Payload = unknown>(spec: {
   bus: BusName
-  channel: string
+  channel: ChannelSelector
   subscription: string
   maxInFlight?: number
+  ordered?: "per-key" | "per-partition"
   handler: (payload: Payload, ctx, message) => unknown
 }): ConsumerDefinition
 ```
@@ -211,10 +213,10 @@ file path — see
 | Field | Meaning |
 | --- | --- |
 | `bus` | Which `bus/` file to bind to. Checked against the generated `BusRegistry` |
-| `channel` | What to subscribe to. May be a wildcard when the bus advertises `patterns` |
+| `channel` | A literal string, or `pattern("orders.#")` when the bus advertises `patterns`. A bare string containing `*`, `#` or `>` is a boot error — use `pattern()` or `literal()` |
 | `subscription` | The durable subscriber identity — a queue, a consumer group |
 | `input` | Optional payload schema. Omit it and use `consume<Payload>({...})` |
-| `maxInFlight` | Concurrent deliveries. Defaults to 1; raising it forfeits ordering |
+| `maxInFlight` | Concurrent deliveries **in this process**. Defaults to 1. A concurrency limit, not an ordering guarantee |
 
 Two overloads rather than one, so pass **either** `input` **or** a type
 argument. Supplying both is a type error: the explicit type argument selects the
@@ -224,11 +226,17 @@ second overload, which does not accept `input`. See
 ### `.retry(policy)`
 
 ```ts
-.retry({ attempts: number, backoff?: { base, factor?, max?, jitter? } })
+.retry({
+  attempts: number
+  backoff?: { base, factor?, max?, jitter? }
+})
 ```
 
-Chainable, like `.meta()`. Capped at `attempts` total deliveries. Boot-checked
-against the bus's `attempts`, `redelivery` and `delayedRetry` capabilities.
+Chainable, like `.meta()`. `attempts` caps **handler failures**, including the
+first — a delivery that never ran the handler to a verdict does not spend one,
+and bounding those is the broker's job. Boot-checked against the bus's
+`retries` capability. See
+[Retries](/guide/message-bus#retries).
 
 ## `reject(reason)`
 
@@ -322,7 +330,17 @@ checks a shared symbol brand, so it works across copies.
 | Export | What it is |
 | --- | --- |
 | `bus`, `consume`, `reject` | The definitions above |
-| `memoryBus()` | In-process bus for dev, tests and single-process deployments |
-| `readAttempt`, `stampAttempt`, `ATTEMPT_HEADER` | Carry the delivery counter across a retry hop |
+| `pattern()`, `literal()` | Declare a channel as a broker-expanded selector, or as a literal containing wildcard characters |
+| `memoryBus(options?)` | In-process bus for dev, tests and single-process deployments. `capabilities` mirrors the broker you deploy against |
+| `readFailures`, `stampFailures`, `ATTEMPT_HEADER` | Carry the failure counter across a retry hop |
+| `encodeJson`, `decodeJson`, `MessageDecodeError` | The default wire format, for `publish()` and a custom `decode` |
 | `matchChannel(selector, channel)` | The wildcard matcher, for adapters that need one |
 | `MessageValidationError` | Raised when a payload fails `input` |
+
+### From `clovejs/testing`
+
+| Export | What it is |
+| --- | --- |
+
+The rest of the testing entrypoint — `createTestApp` and friends — is covered in
+[Testing](/guide/testing).

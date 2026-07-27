@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **Message bus.** Files in `bus/` declare broker connections, files in
+  `consumers/` handle what arrives on them. Clove ships no broker client: a bus
+  is any object with `capabilities`, `publish` and `subscribe`, and the adapter
+  owns the driver loop while core owns the delivery lifecycle — decode,
+  validation, scope, and the ack / retry / reject verdict.
+- A bus declares two capabilities — `retries` (`"none"`, `"immediate"` or
+  `"delayed"`) and `patterns` — and core refuses to boot when a consumer asks for
+  a guarantee its bus does not provide. Ordering is deliberately not among them:
+  it is a property of the broker topology that no field on a consumer could
+  deliver.
+- `retry({ attempts })` caps **handler failures**, including the first. A
+  delivery lost to a crash or an expired `busDrainTimeout` never ran the handler
+  to a verdict, so it does not spend an attempt — bounding those is the broker's
+  job, via a redrive policy or a max-delivery setting on the queue. Core computes
+  the backoff and stamps the counter; the adapter only carries it.
+- A `retry` outcome names the single `subscription` that may see the message
+  again, because re-publishing to a channel re-routes it to every other
+  subscription bound there.
+- Adapters may hand core raw bytes as `body` instead of a decoded `payload`, so
+  a malformed message reaches a `reject` verdict instead of throwing where
+  nothing can acknowledge it. JSON is the default codec both ways.
+- `memoryBus(options)` takes `capabilities`, to mirror the broker a project
+  deploys against.
+- Channels are literals unless wrapped in `pattern()`, never inferred from
+  wildcard punctuation.
+- Every delivery opens an isolated request scope of its own, so `request` is
+  the one per-unit-of-work lifetime. A `di/` or service factory's second
+  argument carries `trigger` — a discriminated union of `http`, `ws`, `mcp` and
+  `delivery` — for values that serve more than one kind of work and have to
+  tell them apart.
+- Headers beginning `x-clove-` are reserved: stripped from what a handler sees,
+  and refused by `publish()`.
+- `app.bus.health()` reports what each subscription's driver loop is doing, for a
+  readiness probe.
 - **Route caching.** `GET` and `HEAD` definitions support `.cache(...)` with
   deterministic keys, `Vary`, stale follower serving, concurrent-miss
   coalescing, ETags and conditional `304` responses. Mutation routes can

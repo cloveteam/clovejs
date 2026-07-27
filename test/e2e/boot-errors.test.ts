@@ -193,7 +193,7 @@ describe("mcp validation", () => {
 
 describe("message bus", () => {
   /** A bus file whose capabilities are whatever the test needs to prove. */
-  const busFile = (caps: Record<string, boolean>): string =>
+  const busFile = (caps: Record<string, boolean | string>): string =>
     `import { bus } from "clovejs/bus"\n` +
     `export default bus({\n` +
     `  capabilities: ${JSON.stringify(caps)},\n` +
@@ -201,16 +201,11 @@ describe("message bus", () => {
     `  async subscribe() { return { async close() {} } },\n` +
     `})\n`
 
-  const FULL = {
-    redelivery: true,
-    attempts: true,
-    delayedRetry: true,
-    patterns: true,
-    confirms: true,
-  }
+  const FULL = { retries: "delayed", patterns: true }
 
   const consumerFile = (spec: string, chain = ""): string =>
-    `import { consume } from "clovejs/bus"\n` +
+    `import { consume, pattern, literal } from "clovejs/bus"\n` +
+    `void literal\n` +
     `export default consume({ ${spec}, handler: async () => {} })${chain}\n`
 
   it("names both files when a consumer names a bus that does not exist", async () => {
@@ -258,44 +253,33 @@ describe("message bus", () => {
 
   it("refuses retry() on a bus that never redelivers", async () => {
     const promise = boot({
-      "bus/fanout.ts": busFile({ ...FULL, redelivery: false, attempts: false }),
+      "bus/fanout.ts": busFile({ ...FULL, retries: "none" }),
       "consumers/a.ts": consumerFile(
         `bus: "fanout", channel: "c", subscription: "s"`,
         `.retry({ attempts: 3 })`,
       ),
     })
-    await expect(promise).rejects.toThrow(/redelivery: false/)
+    await expect(promise).rejects.toThrow(/retries: "none"/)
     await expect(promise).rejects.toThrow(/retrying cannot happen/)
-  })
-
-  it("refuses retry() on a bus that cannot count attempts, so the cap never fires", async () => {
-    const promise = boot({
-      "bus/events.ts": busFile({ ...FULL, attempts: false }),
-      "consumers/a.ts": consumerFile(
-        `bus: "events", channel: "c", subscription: "s"`,
-        `.retry({ attempts: 3 })`,
-      ),
-    })
-    await expect(promise).rejects.toThrow(/attempts: false/)
-    await expect(promise).rejects.toThrow(/redeliver forever/)
   })
 
   it("refuses a backoff the bus would silently drop", async () => {
     const promise = boot({
-      "bus/events.ts": busFile({ ...FULL, delayedRetry: false }),
+      "bus/events.ts": busFile({ ...FULL, retries: "immediate" }),
       "consumers/a.ts": consumerFile(
         `bus: "events", channel: "c", subscription: "s"`,
         `.retry({ attempts: 3, backoff: { base: 500 } })`,
       ),
     })
-    await expect(promise).rejects.toThrow(/delayedRetry: false/)
+    await expect(promise).rejects.toThrow(/retries: "immediate"/)
+    await expect(promise).rejects.toThrow(/silently dropped/)
   })
 
   it("refuses a wildcard selector on a bus without pattern support", async () => {
     const promise = boot({
       "bus/events.ts": busFile({ ...FULL, patterns: false }),
       "consumers/a.ts": consumerFile(
-        `bus: "events", channel: "orders.#", subscription: "s"`,
+        `bus: "events", channel: pattern("orders.#"), subscription: "s"`,
       ),
     })
     await expect(promise).rejects.toThrow(/patterns: false/)
@@ -304,7 +288,7 @@ describe("message bus", () => {
   it("allows retry() with no backoff against a bus that cannot delay", async () => {
     await expect(
       boot({
-        "bus/events.ts": busFile({ ...FULL, delayedRetry: false }),
+        "bus/events.ts": busFile({ ...FULL, retries: "immediate" }),
         "consumers/a.ts": consumerFile(
           `bus: "events", channel: "c", subscription: "s"`,
           `.retry({ attempts: 3 })`,
@@ -325,10 +309,27 @@ describe("message bus", () => {
     const promise = boot({
       "bus/events.ts":
         `import { bus } from "clovejs/bus"\n` +
-        `export default bus({ capabilities: { redelivery: true } as any, ` +
+        `export default bus({ capabilities: { retries: "delayed" } as any, ` +
         `async publish() {}, async subscribe() { return { async close() {} } } })\n`,
     })
-    await expect(promise).rejects.toThrow(/capabilities.attempts is undefined/)
+    await expect(promise).rejects.toThrow(/capabilities.patterns is undefined/)
+  })
+
+  it("refuses to guess whether a bare wildcard channel is a selector", async () => {
+    const promise = boot({
+      "bus/events.ts": busFile(FULL),
+      "consumers/a.ts": consumerFile(
+        `bus: "events", channel: "orders.#", subscription: "s"`,
+      ),
+    })
+    await expect(promise).rejects.toThrow(/pattern\("orders\.#"\)/)
+  })
+
+  it("rejects an unknown retries value", async () => {
+    const promise = boot({
+      "bus/events.ts": busFile({ ...FULL, retries: "sometimes" }),
+    })
+    await expect(promise).rejects.toThrow(/capabilities.retries is "sometimes"/)
   })
 
   it("rejects a consumer missing a required field", async () => {

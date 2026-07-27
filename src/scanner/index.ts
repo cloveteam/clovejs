@@ -2,6 +2,7 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { Registry, type Provider } from "../container/registry.js"
 import { validateCachePolicy } from "../cache/runtime.js"
+import { resolveChannel } from "../bus/channel.js"
 import { validateRetryPolicy } from "../bus/retry.js"
 import {
   busProviderKey,
@@ -164,7 +165,8 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         const d = def as DiDefinition
         if (!["singleton", "session", "request"].includes(d.lifetime)) {
           throw new CloveBootError(
-            `Unknown lifetime "${d.lifetime}". Use "singleton", "session" or "request".`,
+            `Unknown lifetime "${d.lifetime}". Use "singleton", "session" or ` +
+              '"request".',
             [file.absolute],
           )
         }
@@ -397,7 +399,7 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     }
     const d = def as ConsumerDefinition
 
-    for (const field of ["bus", "channel", "subscription"] as const) {
+    for (const field of ["bus", "subscription"] as const) {
       if (typeof d[field] !== "string" || d[field].length === 0) {
         throw new CloveBootError(
           `consume({ ${field} }) is required and must be a non-empty string.`,
@@ -405,10 +407,12 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
         )
       }
     }
+    const { channel, pattern } = resolveChannel(d.channel, file.absolute)
+    const maxInFlight = d.maxInFlight ?? 1
     if (d.maxInFlight !== null && (!Number.isInteger(d.maxInFlight) || d.maxInFlight < 1)) {
       throw new CloveBootError(
         "`maxInFlight` must be an integer of at least 1. It defaults to 1, " +
-          "because any higher value forfeits per-key ordering.",
+          "because any higher value runs deliveries concurrently.",
         [file.absolute],
       )
     }
@@ -426,18 +430,21 @@ export async function scanProject(options: ScanOptions): Promise<ScanResult> {
     const name = stripExtension(file.relative)
     claim(
       consumerKeys,
-      `${d.bus} ${d.channel} ${d.subscription}`,
+      // A consumer's identity is the triple, joined by a character no channel or
+      // subscription name can contain.
+      [d.bus, channel, d.subscription].join("\0"),
       file.absolute,
-      `consumer for channel "${d.channel}" with subscription "${d.subscription}" ` +
+      `consumer for channel "${channel}" with subscription "${d.subscription}" ` +
         `on bus "${d.bus}"`,
     )
 
     consumers.push({
       name,
       bus: d.bus,
-      channel: d.channel,
+      channel,
+      pattern,
       subscription: d.subscription,
-      maxInFlight: d.maxInFlight ?? 1,
+      maxInFlight,
       input: compileValidator(d.input, file.absolute),
       handler: d.handler,
       retry: validateRetryPolicy(d[RETRY], file.absolute),

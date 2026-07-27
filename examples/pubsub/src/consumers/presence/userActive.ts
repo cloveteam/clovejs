@@ -1,10 +1,10 @@
-import { consume } from "clovejs/bus"
+import { consume, pattern } from "clovejs/bus"
 
 /**
  * A consumer on the fire-and-forget bus.
  *
  * There is no `.retry(...)` here, and that is not an oversight: `bus/presence`
- * advertises `redelivery: false`, so adding one is a boot error naming this
+ * advertises `retries: "none"`, so adding one is a boot error naming this
  * file and the bus file. Retrying on a transport that never redelivers is not a
  * slower success, it is a promise nothing can keep — so CloveJS refuses it at
  * boot rather than letting it look like it works.
@@ -14,7 +14,7 @@ import { consume } from "clovejs/bus"
  */
 export default consume<{ userId: string }>({
   bus: "presence",
-  channel: "user.*",
+  channel: pattern("user.*"),
   subscription: "live",
 
   async handler(event, ctx, message) {

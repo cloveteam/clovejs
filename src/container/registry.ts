@@ -75,9 +75,19 @@ export class Registry {
     return this.all().filter((p) => p.lifetime === lifetime)
   }
 
-  /** Keys to force-resolve whenever a scope of this lifetime is created. */
-  eagerKeys(lifetime: Lifetime): string[] {
-    return this.byLifetime(lifetime)
+  keysOwnedBy(scope: Lifetime): string[] {
+    return this.byLifetime(scope).map((p) => p.key)
+  }
+
+  /**
+   * Keys to force-resolve whenever a scope of this kind opens.
+   *
+   * `di({ eager: true })` is the per-request and per-delivery hook, so this is
+   * what makes such a factory run at all — resolution is otherwise lazy, and a
+   * value nothing reads would silently never fire.
+   */
+  eagerKeys(scope: Lifetime): string[] {
+    return this.byLifetime(scope)
       .filter((p) => p.eager === true)
       .map((p) => p.key)
   }

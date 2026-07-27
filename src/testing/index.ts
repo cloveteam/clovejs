@@ -1,6 +1,6 @@
 import { createApp, CloveApp, type AppOptions } from "../app.js"
-import type { DispatchInput } from "../bus/runtime.js"
-import type { PublishRecord } from "../bus/memory.js"
+import type { DispatchInput, SubscriptionHealth } from "../bus/runtime.js"
+import type { DeadRecord, MemoryBus, PublishRecord } from "../bus/memory.js"
 import type { DeliveryOutcome, PublishOptions } from "../bus/types.js"
 import { Container } from "../container/container.js"
 import { createLogger } from "../container/logger.js"
@@ -68,10 +68,10 @@ export interface CookieJar {
 export interface TestBus {
   /**
    * Runs one message through the full delivery path — isolated scope, eager
-   * values, validation, handler, outcome — with no broker and no subscription.
-   * Returns the {@link DeliveryOutcome} to assert on.
+   * values, decode, validation, handler, outcome — with no broker and no
+   * subscription. Returns the {@link DeliveryOutcome} to assert on.
    *
-   * Pass `attempt` to exercise a redelivery, including retry exhaustion.
+   * Pass `failures` to exercise a redelivery, including retry exhaustion.
    */
   dispatch(input: DispatchInput): Promise<DeliveryOutcome>
   /** Publishes as a producer would, reaching consumers once `start()` has run. */
@@ -83,10 +83,17 @@ export interface TestBus {
   ): Promise<void>
   /** Everything published through an in-memory bus, for assertions. */
   published(bus: string): readonly PublishRecord[]
-  /** Subscribes consumers. Needed only under `createTestApp({ bus: "manual" })`. */
+  /** Everything an in-memory bus rejected — its dead-letter queue. */
+  dead(bus: string): readonly DeadRecord[]
+  /**
+   * Subscribes consumers. Needed only under
+   * `createTestApp({ startConsumers: false })`.
+   */
   start(): Promise<void>
   /** Waits for queued and in-flight deliveries. Returns how many were abandoned. */
   drain(timeout?: number): Promise<number>
+  /** What each subscription's driver loop is reporting. */
+  health(): SubscriptionHealth[]
 }
 
 /** The MCP surface, dispatched without a JSON-RPC transport. */
@@ -222,9 +229,32 @@ class TestAppHarness implements TestApp {
     dispatch: (input) => this.app.bus.dispatch(input),
     publish: (bus, channel, payload, options) =>
       this.app.bus.publisher(bus).publish(channel, payload, options),
-    published: (bus) => this.app.bus.published(bus),
+    published: (bus) => this.#memory(bus, "published").published,
+    dead: (bus) => this.#memory(bus, "dead").dead,
     start: () => this.app.bus.start(),
     drain: (timeout) => this.app.bus.drain(timeout),
+    health: () => this.app.bus.health(),
+  }
+
+  /**
+   * The named bus, asserted to be an in-process one.
+   *
+   * A broker connection has no record of what it published and no list of what
+   * is in flight, so asking a real adapter is a mistake worth naming rather than
+   * an empty result worth trusting. The check lives here rather than in
+   * `BusRuntime` so the production runtime never has to know what a memory bus
+   * is.
+   */
+  #memory(name: string, field: keyof MemoryBus): MemoryBus {
+    const instance = this.app.bus.bus(name) as Partial<MemoryBus>
+    const value = instance[field]
+    if (value === undefined) {
+      throw new Error(
+        `Bus "${name}" does not support \`${field}\`. This is available on ` +
+          "memoryBus(); a real broker adapter cannot provide it.",
+      )
+    }
+    return instance as MemoryBus
   }
 
   readonly ws = {

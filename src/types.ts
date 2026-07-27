@@ -35,7 +35,36 @@ export interface BusRegistry {}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type RuntimeCtx = Ctx & Record<string, any>
 
+/**
+ * How long an injected value lives.
+ *
+ * `request` covers any single unit of work — an HTTP request, a socket, an MCP
+ * call or a message delivery — so one `di/` file can serve all of them.
+ */
 export type Lifetime = "singleton" | "session" | "request"
+
+/**
+ * What opened the current scope, for the rare value that has to tell.
+ *
+ * A `request`-lifetime value resolves under an HTTP request and under a message
+ * delivery, which is usually the point — but a value that reads `req`, or a hook
+ * that should fire for only one of them, needs to know which it got. A factory
+ * reads it from its second argument as `value(ctx, { trigger })`; it is
+ * `undefined` for `singleton` and `session` values, which outlive any single
+ * unit of work.
+ */
+export type Trigger =
+  | { readonly kind: "http"; readonly req: CloveRequest; readonly res: CloveResponse }
+  | { readonly kind: "ws"; readonly req: CloveRequest }
+  | { readonly kind: "mcp"; readonly method: string }
+  | {
+      readonly kind: "delivery"
+      readonly bus: string
+      readonly channel: string
+      readonly subscription: string
+      /** The consumer's path-derived display name, e.g. `billing/orderCreated`. */
+      readonly consumer: string
+    }
 
 export const KIND = Symbol.for("clovejs.kind")
 
@@ -66,9 +95,15 @@ export type HttpMethod =
   | "HEAD"
   | "OPTIONS"
 
-/** Hook registrar handed to service / di / ws factories. */
+/** The second argument to service / di / bus factories. */
 export interface LifecycleHooks {
   onDestroy(fn: () => void | Promise<void>): void
+  /**
+   * What opened the scope this value lives in — an HTTP request, a socket, an
+   * MCP call or a message delivery. Undefined for `singleton` and `session`
+   * values, which outlive any single unit of work.
+   */
+  readonly trigger?: Trigger
 }
 
 export type RouteHandlerFn = (

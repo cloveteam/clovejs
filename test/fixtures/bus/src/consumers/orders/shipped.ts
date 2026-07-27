@@ -1,12 +1,15 @@
 import { consume } from "clovejs/bus"
 import { z } from "zod"
 
-/** The same channel as `billing.ts`, under its own subscription. */
+/**
+ * A schema that names the fields it keeps, so anything else in the payload is
+ * dropped before the handler — and before `message.payload`.
+ */
 export default consume({
   bus: "events",
-  channel: "orders.created",
-  subscription: "email",
-  input: z.object({ orderId: z.string(), total: z.number().nonnegative() }),
+  channel: "orders.shipped",
+  subscription: "shipping",
+  input: z.object({ orderId: z.string() }),
 
   async handler(order, ctx, message) {
     ctx.log.record({

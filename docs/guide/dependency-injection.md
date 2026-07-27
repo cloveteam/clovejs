@@ -1,7 +1,8 @@
 # Values and lifetime scopes
 
 Files in `di/` inject plain values onto `ctx`. Each declares how long it lives:
-`singleton` (the whole process), `session` (one visitor), or `request`.
+`singleton` (the whole process), `session` (one visitor), or `request` (one
+unit of work).
 
 ```ts
 // src/di/currentUser.ts
@@ -19,13 +20,43 @@ export default di({
 | --- | --- | --- | --- |
 | `singleton` | Once, at boot, before the server listens | On shutdown | Config, database clients, caches |
 | `session` | On first access within a visitor's session | When the session expires or is destroyed | The signed-in user, a cart |
-| `request` | On first access within one request | When the response finishes | Request id, per-request transaction |
+| `request` | On first access within one unit of work | When that work finishes | Request id, per-request transaction |
 
 Declaring **any** `session`-scoped value turns [sessions](/guide/sessions) on
 for the app. `request` scope needs no setup.
 
-WebSocket connections each get their own request-scoped container, disposed
-when the socket closes.
+`request` means *one unit of work*, not strictly one HTTP request: a scope
+opens for an HTTP request, a socket, an MCP call **and** a
+[message delivery](/guide/message-bus#per-delivery-hooks) alike, so one file
+serves all of them. WebSocket connections each get their own request-scoped
+container, disposed when the socket closes.
+
+### Knowing what opened the scope
+
+When one `request`-lifetime value serves several kinds of work and has to know
+which it got, the factory's second argument carries `trigger`, a discriminated
+union:
+
+```ts
+// src/di/workSource.ts
+export default di({
+  lifetime: "request",
+  value(_ctx, { trigger }) {
+    switch (trigger?.kind) {
+      case "http":
+        return `${trigger.req.method} ${trigger.req.path}`
+      case "delivery":
+        return `${trigger.bus}/${trigger.channel} → ${trigger.consumer}`
+      default:
+        return "unknown"
+    }
+  },
+})
+```
+
+`kind` is `"http"`, `"ws"`, `"mcp"` or `"delivery"`, each narrowing to what that
+kind actually carries. `trigger` is `undefined` for `singleton` and `session`
+factories, which outlive any single unit of work.
 
 ## Assigning from a middleware
 

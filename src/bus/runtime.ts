@@ -2,18 +2,23 @@ import type { Container } from "../container/container.js"
 import type { Logger } from "../container/logger.js"
 import type { Registry } from "../container/registry.js"
 import { CloveBootError } from "../errors.js"
+import type { Trigger } from "../types.js"
+import { reservedHeadersIn, stampFailures, stripReserved } from "./attempts.js"
+import { matchChannel } from "./channel.js"
+import { decodeJson, MessageDecodeError } from "./codec.js"
 import { isReject } from "./definitions.js"
 import { asValidationError, type Validator } from "./schema.js"
 import { computeDelay } from "./retry.js"
-import type { PublishRecord } from "./memory.js"
 import type {
   BusSubscription,
   ConsumerHandler,
+  DeliveredMessage,
   DeliveryOutcome,
   MessageBus,
   MessageEnvelope,
   Publisher,
   RetryPolicy,
+  SubscriptionState,
 } from "./types.js"
 
 /** A `bus/` file, resolved into a registry provider. */
@@ -31,6 +36,8 @@ export interface LoadedConsumer {
   name: string
   bus: string
   channel: string
+  /** True when `channel` is a selector for the broker to expand. */
+  pattern: boolean
   subscription: string
   maxInFlight: number
   input: Validator | null
@@ -65,9 +72,6 @@ export function busProviderKey(name: string): string {
   return BUS_PROVIDER_PREFIX + name
 }
 
-/** Characters that mean "wildcard" to AMQP and NATS. */
-const WILDCARD = /[*#>]/
-
 export const DEFAULT_DRAIN_TIMEOUT = 30_000
 
 export interface DispatchInput {
@@ -77,11 +81,26 @@ export interface DispatchInput {
   /** Required only when several consumers share the channel. */
   subscription?: string
   payload: unknown
-  /** Simulate a redelivery. Defaults to 1. */
-  attempt?: number
+  /**
+   * Simulate a redelivery by stating how many times the handler has already
+   * failed. Defaults to 0, a first delivery.
+   */
+  failures?: number
   headers?: Record<string, string>
   id?: string
   key?: string
+}
+
+/** What one subscription's driver loop is reporting. */
+export interface SubscriptionHealth {
+  bus: string
+  consumer: string
+  channel: string
+  subscription: string
+  state: SubscriptionState
+  detail?: string
+  /** When the state last changed. */
+  since: Date
 }
 
 /**
@@ -97,6 +116,7 @@ export class BusRuntime {
   #subscriptions: BusSubscription[] = []
   #inflight = new Set<Promise<unknown>>()
   #eagerKeys: string[] = []
+  #health = new Map<string, SubscriptionHealth>()
   #started = false
   #closed = false
 
@@ -131,7 +151,9 @@ export class BusRuntime {
    * files, rather than at 3am on a poison message.
    */
   async init(): Promise<void> {
-    const { scan, root, registry, logger } = this.#options
+    const { scan, root, registry } = this.#options
+    // A delivery opens a request scope of its own, so every eager
+    // `request`-lifetime `di/` value fires per delivery too.
     this.#eagerKeys = registry.eagerKeys("request")
 
     for (const entry of scan.buses) {
@@ -146,54 +168,50 @@ export class BusRuntime {
       const caps = bus.capabilities
       const busFile = scan.buses.find((b) => b.name === consumer.bus)!.file
       const attempts = consumer.retry?.attempts ?? 1
+      const at = [consumer.file, busFile]
+      const fail = (message: string): never => {
+        throw new CloveBootError(
+          `Consumer "${consumer.name}" ${message}`,
+          at,
+        )
+      }
 
-      if (attempts > 1 && !caps.redelivery) {
-        throw new CloveBootError(
-          `Consumer "${consumer.name}" declares retry({ attempts: ${attempts} }), but ` +
-            `bus "${consumer.bus}" advertises redelivery: false — an un-acked ` +
-            `message never comes back, so retrying cannot happen. Drop the ` +
-            `retry() call, or bind this consumer to a bus that redelivers.`,
-          [consumer.file, busFile],
+      if (attempts > 1 && caps.retries === "none") {
+        fail(
+          `declares retry({ attempts: ${attempts} }), but bus ` +
+            `"${consumer.bus}" advertises retries: "none" — an un-acked ` +
+            "message never comes back, so retrying cannot happen. Drop the " +
+            "retry() call, or bind this consumer to a bus that redelivers.",
         )
       }
-      if (attempts > 1 && !caps.attempts) {
-        throw new CloveBootError(
-          `Consumer "${consumer.name}" declares retry({ attempts: ${attempts} }), but ` +
-            `bus "${consumer.bus}" advertises attempts: false — it cannot report ` +
-            `an accurate delivery count, so the cap would never fire and a ` +
-            `failing message would redeliver forever. Carry the counter with ` +
-            `stampAttempt()/readAttempt() in the adapter, or drop the retry() call.`,
-          [consumer.file, busFile],
+      if ((consumer.retry?.backoff?.base ?? 0) > 0 && caps.retries !== "delayed") {
+        fail(
+          `declares a retry backoff, but bus "${consumer.bus}" advertises ` +
+            `retries: "${caps.retries}" — the delay would be silently dropped ` +
+            "and redeliveries would spin at broker speed. Drop the backoff, or " +
+            'give the adapter a delay mechanism and advertise "delayed".',
         )
       }
-      if ((consumer.retry?.backoff?.base ?? 0) > 0 && !caps.delayedRetry) {
-        throw new CloveBootError(
-          `Consumer "${consumer.name}" declares a retry backoff, but bus ` +
-            `"${consumer.bus}" advertises delayedRetry: false — the delay would ` +
-            `be silently dropped and redeliveries would spin at broker speed. ` +
-            `Drop the backoff, or give the adapter a delay mechanism.`,
-          [consumer.file, busFile],
-        )
-      }
-      if (WILDCARD.test(consumer.channel) && !caps.patterns) {
-        throw new CloveBootError(
-          `Consumer "${consumer.name}" subscribes to the pattern ` +
-            `"${consumer.channel}", but bus "${consumer.bus}" advertises ` +
-            `patterns: false. Subscribe to a concrete channel instead.`,
-          [consumer.file, busFile],
+      if (consumer.pattern && !caps.patterns) {
+        fail(
+          `subscribes to the pattern "${consumer.channel}", but bus ` +
+            `"${consumer.bus}" advertises patterns: false. Subscribe to a ` +
+            "concrete channel instead.",
         )
       }
     }
+  }
 
-    for (const entry of scan.buses) {
-      if (!this.#instances.get(entry.name)!.capabilities.confirms) {
-        logger.warn(
-          `Bus "${entry.name}" advertises confirms: false — ` +
-            `\`ctx.bus.${entry.name}.publish()\` resolves before the broker has ` +
-            `accepted the message, so a publish can be silently lost.`,
-        )
-      }
-    }
+  /**
+   * What each subscription's driver loop is doing, for a readiness probe.
+   *
+   * The adapter owns the loop, so core cannot tell a healthy subscription from
+   * one whose connection dropped and never came back. Adapters report state
+   * through the hooks passed to `subscribe()`; anything that never reports reads
+   * as `consuming` until it is closed.
+   */
+  health(): SubscriptionHealth[] {
+    return [...this.#health.values()]
   }
 
   /** The resolved bus by name. Throws when the project defines no such file. */
@@ -214,21 +232,22 @@ export class BusRuntime {
   /** The narrow publish-only facade exposed as `ctx.bus.<name>`. */
   publisher(name: string): Publisher {
     return {
-      publish: (channel, payload, options) =>
-        this.bus(name).publish(channel, payload, options),
+      publish: (channel, payload, options) => {
+        // Control metadata and user headers share one map on every broker, so a
+        // producer setting `x-clove-attempt` would hand the consumer a failure
+        // count it never earned — spending its whole retry budget on the first
+        // delivery. Always a bug, so it fails loudly at the call site.
+        const reserved = reservedHeadersIn(options?.headers)
+        if (reserved.length > 0) {
+          throw new Error(
+            `Cannot publish to "${channel}" with reserved header(s) ` +
+              `${reserved.join(", ")}: the "x-clove-" prefix belongs to the ` +
+              "framework's own delivery bookkeeping. Rename them.",
+          )
+        }
+        return this.bus(name).publish(channel, payload, options)
+      },
     }
-  }
-
-  /** Messages published through an in-memory bus. For assertions in tests. */
-  published(name: string): readonly PublishRecord[] {
-    const instance = this.bus(name) as Partial<{ published: PublishRecord[] }>
-    if (!Array.isArray(instance.published)) {
-      throw new Error(
-        `Bus "${name}" does not record published messages. ` +
-          "This is available on memoryBus(); a real broker adapter cannot provide it.",
-      )
-    }
-    return instance.published
   }
 
   /** Subscribes every consumer. Idempotent. */
@@ -238,13 +257,39 @@ export class BusRuntime {
 
     for (const consumer of this.#options.scan.consumers) {
       const bus = this.bus(consumer.bus)
+      const id = `${consumer.bus}\0${consumer.name}`
+      this.#health.set(id, {
+        bus: consumer.bus,
+        consumer: consumer.name,
+        channel: consumer.channel,
+        subscription: consumer.subscription,
+        state: "consuming",
+        since: new Date(),
+      })
+
       const subscription = await bus.subscribe(
         {
           channel: consumer.channel,
+          pattern: consumer.pattern,
           subscription: consumer.subscription,
           maxInFlight: consumer.maxInFlight,
         },
         (message) => this.#track(this.#deliver(consumer, message)),
+        {
+          report: (state, detail) => {
+            const previous = this.#health.get(id)
+            if (previous?.state === state) return
+            this.#health.set(id, {
+              ...this.#health.get(id)!,
+              state,
+              ...(detail ? { detail } : {}),
+              since: new Date(),
+            })
+            const note = `[bus:${consumer.bus}] ${consumer.name} is ${state}`
+            if (state === "consuming") this.#options.logger.info(note)
+            else this.#options.logger.warn(detail ? `${note}: ${detail}` : note)
+          },
+        },
       )
       this.#subscriptions.push(subscription)
     }
@@ -260,8 +305,8 @@ export class BusRuntime {
       channel: input.channel,
       subscription: consumer.subscription,
       payload: input.payload,
-      attempt: input.attempt ?? 1,
-      headers: Object.freeze({ ...input.headers }),
+      failures: input.failures ?? 0,
+      ...(input.headers ? { headers: input.headers } : {}),
       ...(input.id ? { id: input.id } : {}),
       ...(input.key ? { key: input.key } : {}),
       timestamp: new Date(),
@@ -307,6 +352,9 @@ export class BusRuntime {
       ),
     )
     this.#subscriptions = []
+    for (const [id, entry] of this.#health) {
+      this.#health.set(id, { ...entry, state: "stopped", since: new Date() })
+    }
 
     const abandoned = await this.drain()
     if (abandoned > 0) {
@@ -336,36 +384,85 @@ export class BusRuntime {
 
   async #deliver(
     consumer: LoadedConsumer,
-    envelope: MessageEnvelope,
+    incoming: DeliveredMessage,
   ): Promise<DeliveryOutcome> {
-    const attempt = normalizeAttempt(envelope.attempt)
-    // Isolated: a delivery has no session, and resolving a session-lifetime
-    // value into the singleton root would leak it into every later delivery.
-    const container = this.#options.root.createChild("request", { isolated: true })
+    const failures = normalizeFailures(incoming.failures)
+    const attempt = failures + 1
+    // Reserved keys never reach a handler: `x-clove-attempt` is Clove's
+    // bookkeeping, not a header the producer set, and leaking it would invite
+    // code to read or forward it.
+    const headers = Object.freeze(stripReserved(incoming.headers))
+
+    // A delivery is one unit of work, so it opens a request scope of its own —
+    // isolated, because it has no session, and resolving a session-lifetime
+    // value into the singleton root would cache one delivery's state for the
+    // life of the process.
+    const trigger: Trigger = {
+      kind: "delivery",
+      bus: consumer.bus,
+      channel: incoming.channel,
+      subscription: consumer.subscription,
+      consumer: consumer.name,
+    }
+    const container = this.#options.root.createChild("request", {
+      isolated: true,
+      trigger,
+    })
 
     try {
       if (this.#eagerKeys.length > 0) await container.ensure(this.#eagerKeys)
 
-      let payload = envelope.payload
+      let payload: unknown
+      try {
+        payload = this.#decode(consumer, incoming)
+      } catch (err) {
+        // Undecodable bytes will not decode on the next delivery either, so the
+        // verdict is terminal — the same reasoning, and the same outcome, as a
+        // payload that fails validation. Doing this in the adapter instead is
+        // what leaves a message un-acked and looping forever.
+        const failure =
+          err instanceof MessageDecodeError
+            ? err
+            : new MessageDecodeError(messageOf(err), { cause: err })
+        const reason = `Payload failed to decode: ${failure.message}`
+        this.#log(consumer, attempt, "reject", failure, true)
+        return { action: "reject", reason, failures, error: failure }
+      }
+
       if (consumer.input) {
         try {
           payload = await consumer.input(payload)
         } catch (err) {
           const failure = asValidationError(err)
           this.#log(consumer, attempt, "reject", failure, true)
-          return { action: "reject", reason: failure.message, attempt, error: failure }
+          return {
+            action: "reject",
+            reason: failure.message,
+            failures,
+            error: failure,
+          }
         }
       }
 
-      const message: MessageEnvelope = { ...envelope, attempt, payload }
+      const message: MessageEnvelope = {
+        channel: incoming.channel,
+        subscription: consumer.subscription,
+        payload,
+        failures,
+        attempt,
+        headers,
+        ...(incoming.id !== undefined ? { id: incoming.id } : {}),
+        ...(incoming.key !== undefined ? { key: incoming.key } : {}),
+        ...(incoming.timestamp !== undefined ? { timestamp: incoming.timestamp } : {}),
+      }
       await consumer.handler(payload, container.ctx, message)
       return { action: "ack" }
     } catch (err) {
       if (isReject(err)) {
         this.#log(consumer, attempt, "reject", err, true)
-        return { action: "reject", reason: err.reason, attempt, error: err }
+        return { action: "reject", reason: err.reason, failures, error: err }
       }
-      return this.#failure(consumer, attempt, err)
+      return this.#failure(consumer, { failures, headers: incoming.headers }, err)
     } finally {
       await container
         .dispose()
@@ -378,21 +475,37 @@ export class BusRuntime {
     }
   }
 
-  #failure(consumer: LoadedConsumer, attempt: number, err: unknown): DeliveryOutcome {
+  /** Bytes when the adapter passed them, otherwise whatever it decoded itself. */
+  #decode(consumer: LoadedConsumer, incoming: DeliveredMessage): unknown {
+    if (incoming.body === undefined) return incoming.payload
+    const bus = this.bus(consumer.bus)
+    const decode = bus.decode?.bind(bus) ?? decodeJson
+    const { payload: _ignored, ...meta } = incoming
+    return decode(incoming.body, meta)
+  }
+
+  #failure(
+    consumer: LoadedConsumer,
+    state: { failures: number; headers: Record<string, string> | undefined },
+    err: unknown,
+  ): DeliveryOutcome {
     const attempts = consumer.retry?.attempts ?? 1
     const reason = messageOf(err)
+    // The failure that just happened is now part of the count.
+    const failures = state.failures + 1
+    const attempt = state.failures + 1
 
-    if (attempts <= 1 || !this.bus(consumer.bus).capabilities.redelivery) {
+    if (attempts <= 1 || this.bus(consumer.bus).capabilities.retries === "none") {
       this.#log(consumer, attempt, "reject", err)
-      return { action: "reject", reason, attempt, error: err }
+      return { action: "reject", reason, failures, error: err }
     }
 
-    if (attempt >= attempts) {
+    if (failures >= attempts) {
       this.#log(consumer, attempt, "reject", err)
       return {
         action: "reject",
         reason: `Retries exhausted after ${attempts} attempt(s): ${reason}`,
-        attempt,
+        failures,
         error: err,
       }
     }
@@ -400,8 +513,16 @@ export class BusRuntime {
     this.#log(consumer, attempt, "retry", err)
     return {
       action: "retry",
-      attempt: attempt + 1,
+      // Named so an adapter cannot mistake a retry for a re-publish: sending the
+      // message back to the exchange or topic would re-route it to every other
+      // subscription bound there, duplicating work in this consumer's siblings.
+      subscription: consumer.subscription,
       delay: computeDelay(attempt, consumer.retry),
+      // Stamped by core rather than by each adapter, so the counter cannot be
+      // lost by an adapter that forgot to increment it — the failure mode that
+      // makes a retry cap silently stop capping.
+      headers: stampFailures(stripReserved(state.headers), failures),
+      failures,
       error: err,
     }
   }
@@ -434,7 +555,11 @@ export class BusRuntime {
         (input.bus === undefined || consumer.bus === input.bus) &&
         (input.subscription === undefined ||
           consumer.subscription === input.subscription) &&
-        channelMatches(consumer.channel, input.channel),
+        // A literal must match exactly; a selector is expanded, so that a test
+        // can dispatch a concrete channel to a pattern subscriber.
+        (consumer.pattern
+          ? matchChannel(consumer.channel, input.channel)
+          : consumer.channel === input.channel),
     )
 
     if (candidates.length === 1) return candidates[0]!
@@ -481,16 +606,15 @@ function assertBusShape(value: unknown, entry: LoadedBus): void {
 
   const caps = candidate.capabilities as Record<string, unknown> | undefined
   if (typeof caps !== "object" || caps === null) fail("it declares no capabilities")
-  for (const flag of [
-    "redelivery",
-    "attempts",
-    "delayedRetry",
-    "patterns",
-    "confirms",
-  ] as const) {
-    if (typeof caps![flag] !== "boolean") {
-      fail(`capabilities.${flag} is ${typeof caps![flag]}, not a boolean`)
-    }
+  const retries = caps!.retries
+  if (retries !== "none" && retries !== "immediate" && retries !== "delayed") {
+    fail(
+      `capabilities.retries is ${JSON.stringify(retries)}, not one of ` +
+        '"none", "immediate" or "delayed"',
+    )
+  }
+  if (typeof caps!.patterns !== "boolean") {
+    fail(`capabilities.patterns is ${typeof caps!.patterns}, not a boolean`)
   }
 }
 
@@ -503,32 +627,15 @@ function isDrainable(value: MessageBus): value is MessageBus & Drainable {
 }
 
 /**
- * A selector matches a concrete channel, or itself when a test dispatches
- * straight to a pattern subscriber.
+ * A corrupt counter must not disable the cap, so anything odd reads as zero.
+ *
+ * The direction is deliberate: a garbled count that read as a huge number would
+ * reject a healthy message on its first try, whereas reading it as a first
+ * delivery costs at most a few extra attempts.
  */
-function channelMatches(selector: string, channel: string): boolean {
-  if (selector === channel) return true
-  if (!WILDCARD.test(selector)) return false
-  return matchSegments(selector.split("."), channel.split("."))
-}
-
-function matchSegments(pattern: string[], value: string[]): boolean {
-  if (pattern.length === 0) return value.length === 0
-  const [head, ...rest] = pattern
-  if (head === "#" || head === ">") {
-    for (let i = 0; i <= value.length; i++) {
-      if (matchSegments(rest, value.slice(i))) return true
-    }
-    return false
-  }
-  if (value.length === 0) return false
-  if (head !== "*" && head !== value[0]) return false
-  return matchSegments(rest, value.slice(1))
-}
-
-/** A corrupt counter must not disable the cap, so anything odd reads as 1. */
-function normalizeAttempt(attempt: number): number {
-  return Number.isInteger(attempt) && attempt >= 1 ? attempt : 1
+function normalizeFailures(value: number | undefined): number {
+  if (value === undefined) return 0
+  return Number.isInteger(value) && value >= 0 ? value : 0
 }
 
 function messageOf(err: unknown): string {

@@ -1,6 +1,7 @@
-import type { Lifetime, LifecycleHooks, RuntimeCtx } from "../types.js"
+import type { Lifetime, LifecycleHooks, RuntimeCtx, Trigger } from "../types.js"
 import type { Provider, Registry } from "./registry.js"
 
+/** How deep each scope sits in the container chain. */
 const SCOPE_DEPTH: Record<Lifetime, number> = {
   singleton: 0,
   session: 1,
@@ -29,14 +30,24 @@ export class ScopeUnavailableError extends Error {
   constructor(key: string, lifetime: Lifetime, scope: Lifetime) {
     super(
       `Cannot resolve "${key}": it is declared with lifetime "${lifetime}", but ` +
-        `this ${scope} scope has no ${lifetime} parent. Values of this lifetime ` +
-        `are only available where a ${lifetime} scope exists — an HTTP request, ` +
-        `not a message delivery or a socket connection.`,
+        `this ${scope} scope has no ${lifetime} parent. ` +
+        WHERE_AVAILABLE[lifetime],
     )
     this.name = "ScopeUnavailableError"
     this.key = key
     this.lifetime = lifetime
   }
+}
+
+/** Where each lifetime does resolve, since the error is usually a wrong file. */
+const WHERE_AVAILABLE: Record<Lifetime, string> = {
+  singleton: "Singleton values resolve everywhere; this should not happen.",
+  session:
+    "Session values need a visitor, so they resolve under an HTTP request and " +
+    "nowhere else — not in a message delivery, which has no session.",
+  request:
+    "Request values resolve under an HTTP request, a socket, an MCP call or a " +
+    "message delivery.",
 }
 
 export interface ChildScopeOptions {
@@ -46,6 +57,11 @@ export interface ChildScopeOptions {
    * socket connections, which are request-shaped but have no session.
    */
   isolated?: boolean
+  /**
+   * What opened this scope. Surfaced to factories resolving in it (and in its
+   * children) as `trigger` on their second argument.
+   */
+  trigger?: Trigger
 }
 
 /**
@@ -67,6 +83,7 @@ export class Container {
   #ctx?: RuntimeCtx
   #disposed = false
   #isolated = false
+  #trigger?: Trigger
 
   constructor(
     registry: Registry,
@@ -78,11 +95,23 @@ export class Container {
     this.scope = scope
     this.parent = parent
     this.#isolated = options.isolated ?? false
+    this.#trigger = options.trigger
   }
 
   /** True when missing lifetimes throw rather than resolving into an outer scope. */
   get isolated(): boolean {
     return this.#isolated
+  }
+
+  /**
+   * What opened the nearest scope in this chain that declared one, or undefined
+   * in the singleton root, where there is no unit of work at all.
+   */
+  get trigger(): Trigger | undefined {
+    for (let node: Container | undefined = this; node; node = node.parent) {
+      if (node.#trigger) return node.#trigger
+    }
+    return undefined
   }
 
   /** The proxy handed to handlers, middlewares and factories as `ctx`. */
@@ -95,10 +124,23 @@ export class Container {
     return new Container(this.registry, scope, this, options)
   }
 
-  /** Walks up to the container that owns the given lifetime. */
+  /** True when this scope is the right home for values of that lifetime. */
+  owns(lifetime: Lifetime): boolean {
+    return this.scope === lifetime
+  }
+
+  /**
+   * Walks up towards the container that owns the given lifetime, stopping where
+   * the chain runs out of wider scopes — `#ownerFor` decides whether a miss is
+   * a fallback or an error.
+   */
   containerFor(lifetime: Lifetime): Container {
     let node: Container = this
-    while (SCOPE_DEPTH[node.scope] > SCOPE_DEPTH[lifetime] && node.parent) {
+    while (
+      !node.owns(lifetime) &&
+      node.parent &&
+      SCOPE_DEPTH[node.scope] > SCOPE_DEPTH[lifetime]
+    ) {
       node = node.parent
     }
     return node
@@ -128,7 +170,13 @@ export class Container {
    */
   #ownerFor(provider: Provider): Container {
     const owner = this.containerFor(provider.lifetime)
-    if (this.#isolated && owner.scope !== provider.lifetime) {
+    if (owner.owns(provider.lifetime)) return owner
+
+    // Nothing in this chain owns the lifetime. An isolated scope refuses rather
+    // than caching a narrow value in a wide parent — a session value resolved
+    // during a message delivery would land in the singleton root and live for
+    // the rest of the process.
+    if (this.#isolated) {
       throw new ScopeUnavailableError(provider.key, provider.lifetime, this.scope)
     }
     return owner
@@ -180,6 +228,7 @@ export class Container {
 
     const hooks: LifecycleHooks = {
       onDestroy: (fn) => this.#destroyHooks.push(fn),
+      trigger: this.trigger,
     }
 
     this.#resolving.push(provider.key)
@@ -220,8 +269,7 @@ export class Container {
    * so later synchronous `ctx.x` access never yields a promise.
    */
   async ensure(keys?: string[]): Promise<void> {
-    const targets =
-      keys ?? this.registry.byLifetime(this.scope).map((p) => p.key)
+    const targets = keys ?? this.registry.keysOwnedBy(this.scope)
     for (const key of targets) {
       await this.resolveAsync(key)
     }

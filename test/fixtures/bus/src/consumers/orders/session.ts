@@ -11,6 +11,7 @@ export default consume<{ orderId: string }>({
       channel: "orders.session",
       subscription: "session-probe",
       attempt: 1,
+      failures: 0,
       payload: ctx.sessionOnly,
     })
   },

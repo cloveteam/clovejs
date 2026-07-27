@@ -10,6 +10,7 @@ export default consume<{ orderId: string; total: number }>({
       channel: message.channel,
       subscription: message.subscription,
       attempt: message.attempt,
+      failures: message.failures,
       payload: order,
     })
 
