@@ -36,6 +36,13 @@
   and refused by `publish()`.
 - `app.bus.health()` reports what each subscription's driver loop is doing, for a
   readiness probe.
+- **Redis adapters.** `clovejs/bus/redis` ships `redisStreams()` — durable, with
+  consumer groups, a private per-subscription retry stream, a durable delay set
+  for backoff, and `XPENDING`/`XCLAIM` recovery of what a dead worker left — and
+  `redisPubSub()` for fire-and-forget. Still no runtime dependency: it is a
+  separate entry point core never imports, over `redis` or `ioredis` as an
+  optional peer, and it takes a client you already have or a `{ url }` to dial
+  itself. Requires Redis 6.2+.
 - **Route caching.** `GET` and `HEAD` definitions support `.cache(...)` with
   deterministic keys, `Vary`, stale follower serving, concurrent-miss
   coalescing, ETags and conditional `304` responses. Mutation routes can

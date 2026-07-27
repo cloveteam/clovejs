@@ -41,6 +41,21 @@ jobs:
       fail-fast: false
       matrix:
         node: [20, 22]
+
+    # The Redis adapters' integration suite skips itself unless REDIS_URL is
+    # set, so a contributor needs nothing installed — but CI is where the
+    # assumptions about a real server get checked, so it runs one.
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -56,3 +71,5 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          REDIS_URL: redis://127.0.0.1:6379

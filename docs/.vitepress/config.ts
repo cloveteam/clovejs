@@ -83,6 +83,7 @@ export default defineConfig({
             { text: "WebSockets", link: "/guide/websockets" },
             { text: "Server-Sent Events", link: "/guide/sse" },
             { text: "Message bus", link: "/guide/message-bus" },
+            { text: "Redis", link: "/guide/redis" },
             { text: "MCP servers", link: "/guide/mcp" },
             { text: "Sessions", link: "/guide/sessions" },
           ],

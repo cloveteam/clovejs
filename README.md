@@ -31,7 +31,7 @@ and injectables, fully typed, with zero manual registration.
 - 🧩 **DI.** Out of the box.
 - 🔌 **WebSockets.** Same conventions, `[param]` segments and all.
 - 📡 **Server-Sent Events.** Stream events with `sse()` — framing, heartbeats and reconnect handled.
-- 📬 **Message brokers** (e.g. RabbitMQ, Kafka or Redis) are seamlessly integrated too. No runtime dependency.
+- 📬 **Message brokers** (e.g. RabbitMQ, Kafka or Redis) are seamlessly integrated too. No runtime dependency — and Redis needs no adapter at all, `clovejs/bus/redis` ships one.
 - 🧠 **MCP.** Drop a file in `mcp/tools/` and your app is a Model Context Protocol server.
 - 🤝 **Adopts incrementally.** Mount Clove in an app you already have and migrate routes over at your own pace.
 - 🧪 **Testable.** `clovejs/testing` boots your app with no port and lets you swap any dependency for a fake.

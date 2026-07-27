@@ -5,8 +5,12 @@ messages that arrive on them.
 
 CloveJS ships no broker client and adds no runtime dependency. It understands
 consumers and the delivery lifecycle — validation, scopes, ack, retry, reject —
-and nothing about RabbitMQ, Kafka, SQS, NATS or Redis. You install the SDK you
-want and adapt it in one file.
+and nothing about RabbitMQ, Kafka, SQS or NATS. You install the SDK you want and
+adapt it in one file.
+
+Redis is the exception, and only in the sense that the adapter is
+[already written](/guide/redis): `clovejs/bus/redis` is a separate entry point
+that core never imports, over `redis` or `ioredis` as an *optional* peer.
 
 Everything here comes from `clovejs/bus`, not the core barrel:
 
@@ -171,6 +175,12 @@ that becomes wrong the day a second bus appears, and `ctx.bus.events.publish(…
 reads the same whether the project has one bus or four.
 
 ## Writing an adapter
+
+::: tip Running Redis?
+[`clovejs/bus/redis`](/guide/redis) already has one — `redisStreams()` for
+durable work, `redisPubSub()` for fire-and-forget — so this section is
+background rather than a prerequisite.
+:::
 
 A bus is any object with `capabilities`, `publish` and `subscribe`. `bus()`
 takes that object directly, or a factory `(ctx, hooks)` — the same contract as
@@ -827,5 +837,6 @@ something two connections can offer, and the API does not imply it.
 - [`examples/pubsub`](https://github.com/cloveteam/clovejs/tree/main/examples/pubsub)
   — two buses with different guarantees, three consumers on one channel,
   wildcards, retry with backoff, and a hand-written adapter in fifty lines.
+- [Redis](/guide/redis) for the two adapters CloveJS ships.
 - [Values and lifetimes](/guide/dependency-injection) for `di({ eager })`.
 - [Testing](/guide/testing) for the rest of the harness.
